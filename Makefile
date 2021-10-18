@@ -13,7 +13,7 @@ BINS := $(patsubst $(SRC)/%, $(BIN)/%, $(SRCS:.c=))
 OBJS := $(patsubst $(SRC)/%, $(OBJ)/%, $(SRCS:.c=.o))
 DEPS := $(patsubst $(SRC)/%, $(OBJ)/%, $(SRCS:.c=.d))
 
-.PHONY: all clean pte_editor pte_editor_install
+.PHONY: all clean pteditor pteditor_build pteditor_install pteditor_uninstall
 
 all: $(BINS)
 
@@ -28,11 +28,16 @@ $(OBJ)/%.o: $(SRC)/%.c
 clean:
 	rm -rf $(BIN) $(OBJ)
 
-pte_editor:
+pteditor: pteditor_build pteditor_install
+
+pteditor_build:
 	@echo "Building PTEditor"
 	make -C $(PTEDITOR)/
 
-pte_editor_install:
+pteditor_install:
 	sudo insmod $(PTEDITOR)/module/pteditor.ko
+
+pteditor_uninstall:
+	sudo rmmod $(PTEDITOR)/module/pteditor.ko
 
 -include $(DEPS)
