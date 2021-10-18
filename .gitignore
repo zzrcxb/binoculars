@@ -58,3 +58,11 @@ bin/
 
 # compilation db
 compile_commands.json
+
+# results
+*.log
+*.csv
+*.tsv
+*.pdf
+*.png
+*.json
