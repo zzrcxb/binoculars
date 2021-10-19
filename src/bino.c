@@ -3,8 +3,10 @@
 #include <setjmp.h>
 #include <signal.h>
 #include <stdio.h>
-#include <unistd.h>
 #include <sys/mman.h>
+#include <time.h>
+#include <unistd.h>
+
 #include "utils.h"
 #include "ptedit_header.h"
 
@@ -47,7 +49,7 @@ static bool check_probe() {
 // use MISTRAIN_EPOCH - 1 to mistrain, then mispredict
 #define MISTRAIN_EPOCH 6
 
-static int store_offset_recovery() {
+static int __attribute__((noinline)) store_offset_recovery() {
     int ret = 0;
     u16 offset = 0x888;
     const u32 MEASURES = 100;
@@ -104,7 +106,7 @@ static int store_offset_recovery() {
         }
 
         u16 pte_offset = ((uintptr_t)ptr & 0x1ff000) >> 9;
-        printf("%#5x\t%3d\t%3d\n", pte_offset, disp, counter);
+        printf("%#5x\t%3d\n", pte_offset, counter);
     }
 
     unmap(pages, (1 << 9) * page_size);
@@ -126,8 +128,8 @@ static void segv_handler(int signum) {
 int main(int argc, char **argv) {
     int ret = 0;
     if (ptedit_init()) {
-        fprintf(stderr,
-                "Failed to initialize PTEditor, is kernel module loaded?\n");
+        fprintf(stderr, "Failed to initialize PTEditor, "
+                        "is the kernel module loaded?\n");
         return -1;
     }
 
