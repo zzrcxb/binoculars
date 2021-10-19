@@ -91,7 +91,8 @@ static int __attribute__((noinline)) store_offset_recovery() {
             ptedit_invalidate_tlb(ptr);
             _mfence();
 
-            // tmp is all ones if it's going to mispredict
+            // tmp is all ones if cnt % MISTRAIN_EPOCH == 0;
+            // i.e., it's time to mispredict
             u64 tmp = ((cnt % MISTRAIN_EPOCH) - 1) & (~0xffff);
             tmp = tmp | (tmp >> 16);
 
