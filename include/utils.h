@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -93,6 +94,7 @@ static unsigned _get_cache_hit_threshold(void) {
     unsigned const size = 4096;
     unsigned const count = 1000;
     size_t i;
+    unsigned threshold;
     uint64_t hit_sum = 0, miss_sum = 0;
 
     char *data = malloc(size);
@@ -117,5 +119,12 @@ static unsigned _get_cache_hit_threshold(void) {
     }
 
     free(data);
-    return (miss_sum + 3 * hit_sum) / (4 * count);
+    threshold = (miss_sum + 3 * hit_sum) / (4 * count);
+    if (threshold > 150) {
+        fprintf(stderr,
+                "[WARN] Cache hit threshold is abnormally high at %u cycles, "
+                "please check your system settings.\n",
+                threshold);
+    }
+    return threshold;
 }
