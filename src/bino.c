@@ -112,8 +112,10 @@ static int __attribute__((noinline)) store_offset_recovery() {
                 // we can observe signals from probe[PAGE_SIZE]
                 _maccess(&arr[*ptr * PAGE_SIZE]);
             }
+            _lfence();
 
             // check if *ptr successfully returns 0x1 during misprediction
+            if (tmp && check_probe()) {
                 counter += 1;
             }
         }
@@ -190,15 +192,18 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
         u8 *ptr = victim_page + (disp << 3); // align to 8-byte
         usleep(1000 /* 1ms */);
         *start = 1; // start measurement in sender
+        _mfence();
         _lfence();
         for (u32 rept = 0; rept < REPEATS; rept++) {
             // attempt to stall page walks in sender
             _mwrite(ptr, 0xff /* value to write */);
         }
         *start = 0; // end measurement
+        _mfence();
+        _lfence();
     }
 
-    for (u32 disp = 0; disp < (1 << 9); disp++) {
+    for (u32 disp = 0; disp < INDEX_COUNT; disp++) {
         printf("%#5x\t%lu\n", disp, counts[disp]);
     }
 
@@ -248,11 +253,12 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
         // in the sender, since more L1D resources would be available
         for (u32 cnt = 0; cnt < MEASURES; cnt++) {
             struct timespec t_start, t_end;
-            _lfence();
             clock_gettime(CLOCK_MONOTONIC, &t_start);
+            _lfence();
             for (u32 rept = 0; rept < REPEATS; rept++) {
                 _mwrite(ptr, 0xff /* value to write */);
             }
+            _lfence();
             clock_gettime(CLOCK_MONOTONIC, &t_end);
             u64 nsec_diff = (t_end.tv_sec - t_start.tv_sec) * 1e9 +
                             (t_end.tv_nsec - t_start.tv_nsec);
