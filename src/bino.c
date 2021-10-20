@@ -272,13 +272,25 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
     return ret;
 }
 
+#define STORE_OFFSET_POC "store_offset"
+#define LOAD_PAGE_TRP_POC "load_page_throughput"
+#define LOAD_PAGE_CTT_POC "load_page_contention"
+
 int main(int argc, char **argv) {
-    int ret = 0;
+    if (argc < 2) {
+        fprintf(stderr, "Expect one of these arguments:\n"
+                        "\t" STORE_OFFSET_POC "\n"
+                        "\t" LOAD_PAGE_TRP_POC "\n"
+                        "\t" LOAD_PAGE_CTT_POC "\n");
+        return 1;
+    }
+
     if (ptedit_init()) {
         fprintf(stderr, "Failed to initialize PTEditor, "
                         "is the kernel module loaded?\n");
         return -1;
     }
+    int ret = 0;
 
     threshold = _get_cache_hit_threshold();
     fprintf(stderr, "Cache Hit Threshold: %u\n", threshold);
@@ -293,20 +305,18 @@ int main(int argc, char **argv) {
         goto mmap_fail;
     }
 
-    switch (argv[1][0]) {
-        case '0':
-            ret = store_offset_recovery();
-            break;
-        case '1':
-            ret = load_page_recovery_throughput();
-            break;
-        case '2':
-            ret = load_page_recovery_contention();
-            break;
-        default:
-            ret = -3;
+    if (strcmp(argv[1], STORE_OFFSET_POC) == 0) {
+        ret = store_offset_recovery();
+    } else if (strcmp(argv[1], LOAD_PAGE_TRP_POC) == 0) {
+        ret = load_page_recovery_throughput();
+    } else if (strcmp(argv[1], LOAD_PAGE_CTT_POC) == 0) {
+        ret = load_page_recovery_contention();
+    } else {
+        fprintf(stderr, "Unknown argument \"%s\"", argv[1]);
+        goto arg_fail;
     }
 
+arg_fail:
 mmap_fail:
     unmap(victim_page, PAGE_SIZE);
     unmap(normal_page, PAGE_SIZE);
