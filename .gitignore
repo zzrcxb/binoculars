@@ -55,6 +55,7 @@ dkms.conf
 build/
 build*/
 bin/
+obj/
 
 # compilation db
 compile_commands.json
