@@ -1,6 +1,5 @@
 #define _GNU_SOURCE
 
-#include <setjmp.h>
 #include <signal.h>
 #include <stdio.h>
 #include <sys/mman.h>
@@ -10,7 +9,6 @@
 #include "utils.h"
 #include "ptedit_header.h"
 
-static jmp_buf jmpbuf;
 static u32 threshold; // cache hit threshold
 static u8 *victim_page, *normal_page, *probe, *garbage; // some handy pages
 static volatile u64 size1 = 10, size2 = 11, size3 = 12; // slow branch gadgets
@@ -256,28 +254,12 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
     return ret;
 }
 
-// used for setjmp based fault suppression
-static void segv_handler(int signum) {
-    sigset_t sigs;
-    sigemptyset(&sigs);
-    sigaddset(&sigs, signum);
-    sigprocmask(SIG_UNBLOCK, &sigs, NULL);
-
-    longjmp(jmpbuf, 1);
-}
-
 int main(int argc, char **argv) {
     int ret = 0;
     if (ptedit_init()) {
         fprintf(stderr, "Failed to initialize PTEditor, "
                         "is the kernel module loaded?\n");
         return -1;
-    }
-
-    if (signal(SIGSEGV, segv_handler) == SIG_ERR) {
-        fprintf(stderr, "Failed to register segv handler\n");
-        ret = -1;
-        goto segv_fail;
     }
 
     threshold = _get_cache_hit_threshold();
