@@ -63,6 +63,7 @@ static int __attribute__((noinline)) store_offset_recovery() {
 
     pid_t pid = fork();
     if (pid == 0) {
+        usleep(200);
         u16 offset = 0x888; // offset of the store, align to 8-byte
         while (true) {
             // normal_page is NOT shared, the child process will make a copy on
@@ -160,6 +161,8 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
     if (pid == 0) {
         // sender
         u32 idx = 0;
+        usleep(200);
+
         while (true) {
             u64 cnt = 0;
             while (!*start); /* busy wait */
@@ -229,6 +232,7 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
 
     pid_t pid = fork();
     if (pid == 0) {
+        usleep(100);
         u32 idx = 0;
         while (true) {
             ptedit_invalidate_tlb(page);
@@ -238,6 +242,8 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
         fprintf(stderr, "Failed to fork.\n");
         return 2;
     }
+
+    usleep(100);
 
     for (u32 disp = 0; disp < INDEX_COUNT; disp++) {
         u8 *ptr = victim_page + (disp << 3); // align to 8-byte
@@ -257,6 +263,7 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
             u64 nsec_diff = (t_end.tv_sec - t_start.tv_sec) * 1e9 +
                             (t_end.tv_nsec - t_start.tv_nsec);
             total_time += nsec_diff;
+            usleep(100);
         }
         printf("%#5x\t%lu\n", disp, total_time / MEASURES);
     }
