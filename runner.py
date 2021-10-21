@@ -105,8 +105,7 @@ def repeat_runner(name: str, cores: str, args):
         offsets.append(offset)
         means.append(mean)
         stds.append(std)
-        if args.tsv:
-            print(f'{offset:#x}\t{mean:.2f}\t{std:.2f}')
+        print(f'{offset:#x}\t{mean:.2f}\t{std:.2f}')
 
     plotter(name, offsets, means, stds)
 
@@ -115,10 +114,9 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser('runner.py')
     parser.add_argument('-c', '--cores', type=str, default=None,
-                        help='Pin processes to these cores (e.g., "1,9")')
+                        help='Pin processes to these cores (e.g., "1,9")'\
+                             'Will do auto detection if not specified')
     parser.add_argument('-i', '--iter', type=int, default=10)
-    parser.add_argument('-t', '--tsv', action='store_true',
-                        help='print results in TSV to stdout')
 
     subparsers = parser.add_subparsers(dest='command')
     store_sender = subparsers.add_parser('store_offset')
