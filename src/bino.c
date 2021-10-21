@@ -30,12 +30,6 @@ static u8 *setup_page(size_t size, u8 init) {
     return page;
 }
 
-static void unmap(u8 *page, size_t size) {
-    if (page) {
-        munmap(page, size);
-    }
-}
-
 // get index for a given pointer and a level of page table
 // PGD (level 4) -> PUD (level 3) -> PMD (level 2) -> PTE (level 1)
 static u16 get_PL_index(void *ptr, u8 level) {
@@ -124,7 +118,7 @@ static int __attribute__((noinline)) store_offset_recovery() {
         printf("%#5x\t%3d\n", pte_offset, counter);
     }
 
-    unmap(pages, INDEX_COUNT * PAGE_SIZE);
+    munmap(pages, INDEX_COUNT * PAGE_SIZE);
 mmap_fail:
     kill(pid, SIGKILL);
     return ret;
@@ -318,11 +312,10 @@ int main(int argc, char **argv) {
 
 arg_fail:
 mmap_fail:
-    unmap(victim_page, PAGE_SIZE);
-    unmap(normal_page, PAGE_SIZE);
-    unmap(probe, PAGE_SIZE * 2);
-    unmap(garbage, PAGE_SIZE * 2);
-segv_fail:
+    munmap(victim_page, PAGE_SIZE);
+    munmap(normal_page, PAGE_SIZE);
+    munmap(probe, PAGE_SIZE * 2);
+    munmap(garbage, PAGE_SIZE * 2);
     ptedit_cleanup();
     return ret;
 }
