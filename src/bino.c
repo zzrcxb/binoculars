@@ -128,6 +128,7 @@ mmap_fail:
 static int __attribute__((noinline)) load_page_recovery_throughput() {
     int ret;
     const u32 MEASURES = 100, REPEATS = 100000;
+    const i32 WARMUP = 10;
 
     // a page with PL4_index = 0x87, PL3_index = 0x65,
     // PL2_index = 0x43, PL1_index = 0x21
@@ -160,8 +161,7 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
     pid_t pid = fork();
     if (pid == 0) {
         // sender
-        u32 idx = 0;
-        usleep(200);
+        i32 idx = -WARMUP;
 
         while (true) {
             u64 cnt = 0;
@@ -176,7 +176,8 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
                 cnt += 1;
             }
             // save throughput results
-            counts[idx % (PAGE_SIZE / sizeof(u64))] = cnt;
+            if (idx >= 0)
+                counts[idx % (PAGE_SIZE / sizeof(u64))] = cnt;
             idx++;
         }
     } else if (pid < 0) {
@@ -185,9 +186,13 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
     }
 
     // receiver
-    for (u32 disp = 0; disp < INDEX_COUNT; disp++) {
-        u8 *ptr = victim_page + (disp << 3); // align to 8-byte
-        usleep(1000 /* 1ms */);
+    for (u32 iter = 0; iter < INDEX_COUNT + WARMUP; iter++) {
+        u8 *ptr;
+        if (iter >= WARMUP) {
+            ptr = victim_page + ((iter - WARMUP) << 3); // align to 8-byte
+        } else {
+            ptr = garbage;
+        }
         *start = 1; // start measurement in sender
         _mfence();
         _lfence();
@@ -213,7 +218,7 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
 
 static int __attribute__((noinline)) load_page_recovery_contention() {
     int ret;
-    const u32 MEASURES = 50, REPEATS = 100000;
+    const i32 WARMUP = 10;
 
     // a page with PL4_index = 0x87, PL3_index = 0x65,
     // PL2_index = 0x43, PL1_index = 0x21
@@ -243,10 +248,14 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
         return 2;
     }
 
-    usleep(100);
-
-    for (u32 disp = 0; disp < INDEX_COUNT; disp++) {
-        u8 *ptr = victim_page + (disp << 3); // align to 8-byte
+    for (u32 iter = 0; iter < INDEX_COUNT + WARMUP; iter++) {
+        u32 disp = iter - WARMUP;
+        u8 *ptr;
+        if (iter >= WARMUP) {
+            ptr = victim_page + (disp << 3); // align to 8-byte
+        } else {
+            ptr = garbage;
+        }
         u64 total_time = 0;
         // measure execution latency for MEASURES times
         // we should observe a smaller latency if our store stalls page walk
@@ -263,9 +272,9 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
             u64 nsec_diff = (t_end.tv_sec - t_start.tv_sec) * 1e9 +
                             (t_end.tv_nsec - t_start.tv_nsec);
             total_time += nsec_diff;
-            usleep(100);
         }
-        printf("%#5x\t%lu\n", disp, total_time / MEASURES);
+        if (iter > WARMUP)
+            printf("%#5x\t%lu\n", disp, total_time / MEASURES);
     }
 
     kill(pid, SIGKILL);
