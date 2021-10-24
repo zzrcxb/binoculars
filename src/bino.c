@@ -82,6 +82,7 @@ static int __attribute__((noinline)) store_offset_recovery() {
         goto mmap_fail;
     }
 
+    usleep(rand() % 256);
     for (u32 disp = 0; disp < INDEX_COUNT; disp++) {
         u8 *ptr = pages + disp * PAGE_SIZE;
         u32 counter = 0;
@@ -163,6 +164,7 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
     if (pid == 0) {
         // sender
         i32 idx = -WARMUP;
+        usleep(rand() % 256);
 
         while (true) {
             u64 cnt = 0;
@@ -194,6 +196,7 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
         } else {
             ptr = garbage;
         }
+        usleep(rand() % 256);
         *start = 1; // start measurement in sender
         _mfence();
         _lfence();
@@ -238,7 +241,7 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
 
     pid_t pid = fork();
     if (pid == 0) {
-        usleep(100);
+        usleep(rand() % 256);
         u32 idx = 0;
         while (true) {
             ptedit_invalidate_tlb(page);
@@ -257,7 +260,7 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
         } else {
             ptr = garbage;
         }
-        u64 total_time = 0;
+        usleep(rand() % 256);
         // measure execution latency for MEASURES times
         // we should observe a smaller latency if our store stalls page walk
         // in the sender, since more L1D resources would be available
@@ -316,6 +319,7 @@ int main(int argc, char **argv) {
         goto mmap_fail;
     }
 
+    srand(0);
     if (strcmp(argv[1], STORE_OFFSET_POC) == 0) {
         ret = store_offset_recovery();
     } else if (strcmp(argv[1], LOAD_PAGE_TRP_POC) == 0) {
