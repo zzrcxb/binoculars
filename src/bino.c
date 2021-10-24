@@ -222,6 +222,7 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
 
 static int __attribute__((noinline)) load_page_recovery_contention() {
     int ret;
+    const u32 MEASURES = 50, REPEATS = 10000;
     const i32 WARMUP = 10;
 
     // a page with PL4_index = 0x87, PL3_index = 0x65,
