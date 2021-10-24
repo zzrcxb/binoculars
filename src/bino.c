@@ -53,6 +53,7 @@ static bool check_probe() {
 }
 // end of util functions
 
+#define VICTIM_STORE_OFFSET (0x888u)
 static int __attribute__((noinline)) store_offset_recovery() {
     int ret = 0;
     // use the first (MISTRAIN_EPOCH - 1) iters to mistrain, then mispredict
@@ -64,11 +65,10 @@ static int __attribute__((noinline)) store_offset_recovery() {
     pid_t pid = fork();
     if (pid == 0) {
         usleep(200);
-        u16 offset = 0x888; // offset of the store, align to 8-byte
         while (true) {
             // normal_page is NOT shared, the child process will make a copy on
             // write
-            _mwrite(&normal_page[offset], 0xff /* value to write */);
+            _mwrite(&normal_page[VICTIM_STORE_OFFSET], 0xff);
         }
     } else if (pid < 0) {
         fprintf(stderr, "Failed to fork.\n");
@@ -125,6 +125,7 @@ mmap_fail:
     return ret;
 }
 
+#define VICTIM_LOAD_ADDR (0x439948621000ull)
 static int __attribute__((noinline)) load_page_recovery_throughput() {
     int ret;
     const u32 MEASURES = 100, REPEATS = 100000;
@@ -132,7 +133,7 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
 
     // a page with PL4_index = 0x87, PL3_index = 0x65,
     // PL2_index = 0x43, PL1_index = 0x21
-    u8 *page = mmap((void *)0x439948621000ull /* addr */, PAGE_SIZE,
+    u8 *page = mmap((void *)VICTIM_LOAD_ADDR /* addr */, PAGE_SIZE,
                     PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS,
                     -1 /* fd */, 0 /* offset */);
     if (page == MAP_FAILED) {
@@ -222,7 +223,7 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
 
     // a page with PL4_index = 0x87, PL3_index = 0x65,
     // PL2_index = 0x43, PL1_index = 0x21
-    u8 *page = mmap((void *)0x439948621000ull /* addr */, PAGE_SIZE,
+    u8 *page = mmap((void *)VICTIM_LOAD_ADDR /* addr */, PAGE_SIZE,
                     PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS,
                     -1 /* fd */, 0 /* offset */);
     if (page == MAP_FAILED) {
