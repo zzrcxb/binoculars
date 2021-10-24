@@ -260,22 +260,18 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
         } else {
             ptr = garbage;
         }
+        u32 sig;
+        u64 total_time = 0, t_start;
         usleep(rand() % 256);
         // measure execution latency for MEASURES times
         // we should observe a smaller latency if our store stalls page walk
         // in the sender, since more L1D resources would be available
         for (u32 cnt = 0; cnt < MEASURES; cnt++) {
-            struct timespec t_start, t_end;
-            clock_gettime(CLOCK_MONOTONIC, &t_start);
-            _lfence();
+            t_start = _rdtscp(&sig);
             for (u32 rept = 0; rept < REPEATS; rept++) {
                 _mwrite(ptr, 0xff /* value to write */);
             }
-            _lfence();
-            clock_gettime(CLOCK_MONOTONIC, &t_end);
-            u64 nsec_diff = (t_end.tv_sec - t_start.tv_sec) * 1e9 +
-                            (t_end.tv_nsec - t_start.tv_nsec);
-            total_time += nsec_diff;
+            total_time += _rdtscp(&sig) - t_start;
         }
         if (iter > WARMUP)
             printf("%#5x\t%lu\n", disp, total_time / MEASURES);
