@@ -5,11 +5,10 @@ import numpy as np
 import subprocess
 
 from random import sample
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 from subprocess import PIPE
 from matplotlib import pyplot as plt
 from collections import defaultdict
-from numpy.core.fromnumeric import sort
 from scipy.signal import find_peaks
 from scipy import ndimage
 
@@ -42,20 +41,34 @@ def top_n_peaks(peaks: np.ndarray, means: np.ndarray, npeaks: int,
     return peaks[-npeaks:]
 
 
-def peak_seeking(means: np.ndarray, npeaks: int, reverse: bool=True):
+def peak_seeking_scipy(means: np.ndarray, npeaks: Optional[int]=None,
+                       reverse: bool=True, thresh_r: Optional[float]=None):
     data = -means if reverse else means
-    peaks, _ = find_peaks(data, threshold=np.mean(means) * .01)
-    return top_n_peaks(peaks, means, npeaks, reverse)
+    thresh = np.mean(means) * thresh_r if thresh_r is not None else None
+    peaks, _ = find_peaks(data, threshold=thresh)
+    if npeaks is None:
+        return peaks
+    else:
+        return top_n_peaks(peaks, means, npeaks, reverse)
 
 
-def peak_seeking_std(means: np.ndarray, npeaks: int, sigma: int=2,
-                     reverse: bool = True):
+def peak_seeking_std(means: np.ndarray, npeaks: Optional[int]=None, sigma: int=2,
+                     reverse: bool=True):
     data = -means if reverse else means
     mean = np.mean(data)
     std = np.std(data)
     image = data > (mean + sigma * std)
     regions = ndimage.find_objects(ndimage.label(image)[0])
     peaks = np.array([np.argmax(data[r[0]]) + r[0].start for r in regions])
+    if npeaks is None:
+        return peaks
+
+    if len(regions) < npeaks:
+        extra_peaks = list(peaks)
+        for r in regions:
+            extras = peak_seeking_scipy(means[r[0]])
+            extra_peaks.extend([r[0].start + e for e in extras])
+        # peaks = np.array(list(set(extra_peaks)))
     return top_n_peaks(peaks, means, npeaks, reverse)
 
 
@@ -99,11 +112,11 @@ def plotter(name, offsets: np.ndarray, means: np.ndarray,
     plt.clf()
 
 
-def quality_checker(data: Iterable[int], avg, std) -> bool:
-    if avg is not None and np.mean(data) < avg:
+def quality_checker(data: Iterable[int], avg_thresh, std_thresh) -> bool:
+    if avg_thresh is not None and np.mean(data) < avg_thresh:
         return False
 
-    if std is not None and np.std(data) > std:
+    if std_thresh is not None and np.std(data) > std_thresh * abs(np.mean(data)):
         return False
     return True
 

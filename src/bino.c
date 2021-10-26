@@ -20,8 +20,8 @@ static u8 *victim_page, *normal_page, *probe, *garbage; // some handy pages
 #define INDEX_MASK (INDEX_COUNT - 1)
 
 // allocate PRIVATE memory and initialize it
-static u8 *setup_page(size_t size, u8 init) {
-    u8 *page = mmap(NULL /* addr */, size, PROT_READ | PROT_WRITE,
+static u8 *setup_page(void *addr, size_t size, u8 init) {
+    u8 *page = mmap(addr, size, PROT_READ | PROT_WRITE,
                     MAP_PRIVATE | MAP_ANONYMOUS, -1 /* fd */, 0 /* offset */);
     if (page == MAP_FAILED) {
         return NULL;
@@ -64,7 +64,7 @@ static int __attribute__((noinline)) store_offset_recovery() {
 
     pid_t pid = fork();
     if (pid == 0) {
-        usleep(200);
+        usleep(100);
         while (true) {
             // normal_page is NOT shared, the child process will make a copy on
             // write
@@ -76,13 +76,13 @@ static int __attribute__((noinline)) store_offset_recovery() {
     }
 
     // allocate 512 pages to cover all possible PL1 (PTE) indexes
-    u8 *pages = setup_page(INDEX_COUNT * PAGE_SIZE, 0x1 /* init value */);
+    u8 *pages = setup_page(NULL, INDEX_COUNT * PAGE_SIZE, 0x1 /* init value */);
     if (!pages) {
         ret = 3;
         goto mmap_fail;
     }
 
-    usleep(rand() % 256);
+    // usleep(rand() % 256);
     for (u32 disp = 0; disp < INDEX_COUNT; disp++) {
         u8 *ptr = pages + disp * PAGE_SIZE;
         u32 counter = 0;
@@ -174,6 +174,7 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
             // throughput if _maccess(page)'s page walk is stalled a lot
             while (*start) {
                 ptedit_invalidate_tlb(page);
+                // _mwrite(page, 0xff);
                 _maccess(page);
                 _lfence();
                 cnt += 1;
@@ -247,6 +248,7 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
         while (true) {
             ptedit_invalidate_tlb(page);
             _maccess(page);
+            // _mwrite(page, 0xff);
         }
     } else if (pid < 0) {
         fprintf(stderr, "Failed to fork.\n");
@@ -306,10 +308,11 @@ int main(int argc, char **argv) {
     threshold = _get_cache_hit_threshold();
     fprintf(stderr, "Cache Hit Threshold: %u\n", threshold);
 
-    victim_page = setup_page(PAGE_SIZE, 0x1 /* init value */);
-    normal_page = setup_page(PAGE_SIZE, 0x2);
-    probe = setup_page(PAGE_SIZE * 2, 0x0);
-    garbage = setup_page(PAGE_SIZE * 2, 0x0);
+    victim_page =
+        setup_page((void *)0x600fff8a0000ull, PAGE_SIZE, 0x1 /* init value */);
+    normal_page = setup_page(NULL, PAGE_SIZE, 0x2);
+    probe = setup_page(NULL, PAGE_SIZE * 2, 0x0);
+    garbage = setup_page(NULL, PAGE_SIZE * 2, 0x0);
     if (!victim_page || !normal_page || !probe || !garbage) {
         fprintf(stderr, "Failed to allocate pages.\n");
         ret = -2;
