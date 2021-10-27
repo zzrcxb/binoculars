@@ -11,6 +11,7 @@ from matplotlib import pyplot as plt
 from collections import defaultdict
 from scipy.signal import find_peaks
 from scipy import ndimage
+from operator import gt, lt
 
 SMT_CONTEXTS_CNT = 2
 BINO_BIN = 'bin/bino'
@@ -88,11 +89,13 @@ def plotter(name, offsets: np.ndarray, means: np.ndarray,
         lb = means - stds
         ax.fill_between(offsets, lb, ub, alpha=.5)
 
-    peaks = peak_seeking_std(means, args.npeaks, sigma=args.sigma)
+    peaks = peak_seeking_std(means, args.npeaks, sigma=args.sigma,
+                             reverse=args.reverse)
     ax.plot(offsets[peaks], means[peaks], 'rx')
     for p in peaks:
+        y_offset = -15 if args.reverse else 15
         ax.annotate(f'{offsets[p]:#x}', (offsets[p], means[p]),
-                    textcoords="offset points", xytext=(0, -15),
+                    textcoords="offset points", xytext=(0, y_offset),
                     ha='center', fontsize=9)
 
     min_x, max_x = min(offsets), max(offsets)
@@ -112,8 +115,10 @@ def plotter(name, offsets: np.ndarray, means: np.ndarray,
     plt.clf()
 
 
-def quality_checker(data: Iterable[int], avg_thresh, std_thresh) -> bool:
-    if avg_thresh is not None and np.mean(data) < avg_thresh:
+def quality_checker(data: Iterable[int], avg_thresh, std_thresh,
+                    reverse: bool=True) -> bool:
+    avg_checker = lt if reverse else gt
+    if avg_thresh is not None and avg_checker(np.mean(data), avg_thresh):
         return False
 
     if std_thresh is not None and np.std(data) > std_thresh * abs(np.mean(data)):
@@ -141,7 +146,7 @@ def repeat_runner(name: str, cores: str, args):
                 offsets.append(int(offset, base=16))
                 hist.append(int(cnt))
 
-        if not quality_checker(hist, args.avg_thresh, args.std_thresh):
+        if not quality_checker(hist, args.avg_thresh, args.std_thresh, reverse=args.reverse):
             logging.warning(f'Poor quality. Discarded run {run_cnt}')
         else:
             for offset, cnt in zip(offsets, hist):
@@ -155,6 +160,7 @@ def repeat_runner(name: str, cores: str, args):
     plotter(name, offsets, means, stds, args)
     for offset, mean, std in zip(offsets, means, stds):
         print(f'{offset:#x}\t{mean:.2f}\t{std:.2f}')
+
 
 if __name__ == '__main__':
     import argparse
@@ -177,14 +183,16 @@ if __name__ == '__main__':
 
     subparsers = parser.add_subparsers(dest='command')
     store_sender = subparsers.add_parser('store_offset')
-    store_sender.set_defaults(
-        name='store_offset', npeaks=1, avg_thresh=75, std_thresh=20)
+    store_sender.set_defaults(npeaks=1, avg_thresh=75, std_thresh=20, reverse=True)
+
+    store_sender_lat = subparsers.add_parser('store_offset_latency')
+    store_sender_lat.set_defaults(npeaks=1, avg_thresh=100, reverse=False)
 
     load_trp = subparsers.add_parser('load_page_throughput')
-    load_trp.set_defaults(name='load_page_throughput')
+    load_trp.set_defaults(reverse=True)
 
     load_ctt = subparsers.add_parser('load_page_contention')
-    load_ctt.set_defaults(name='load_page_contention')
+    load_ctt.set_defaults(reverse=True)
 
     args = parser.parse_args()
 
