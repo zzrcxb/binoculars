@@ -69,7 +69,7 @@ def peak_seeking_std(means: np.ndarray, npeaks: Optional[int]=None, sigma: int=2
         for r in regions:
             extras = peak_seeking_scipy(means[r[0]])
             extra_peaks.extend([r[0].start + e for e in extras])
-        # peaks = np.array(list(set(extra_peaks)))
+        peaks = np.array(list(set(extra_peaks)))
     return top_n_peaks(peaks, means, npeaks, reverse)
 
 
