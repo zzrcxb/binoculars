@@ -3,7 +3,7 @@
 ## Why binoculars?
 This side-channel is just like viewing through a binoculars from either end.
 From one end, you can make things seem "closer" (extracting store offsets);
-from the other side, you can make things seem "farther" (extracting load page).
+from the other side, you can make things seem "farther" (extracting virtual page numbers).
 
 ## Requirements
 These PoCs depend on [PTEditor](https://github.com/misc0110/PTEditor),
@@ -12,7 +12,7 @@ Therefore, a kernel module build environment is required.
 
 For the `runner.py` script to work, you will need
 `Python >= 3.6`, and then execute
-`pip3 install -r requirements.txt --user`
+```pip3 install -r requirements.txt --user```
 to install required libraries.
 
 ## Build
@@ -21,13 +21,16 @@ Execute `make pteditor` to build PTEditor and load the kernel module.
 Execute `make` to build PoCs.
 
 ## PoCs
-`store_offset`: PoC that recovers 11-3 bits of a store's address.
+`store_offset`: PoC that recovers 11-3 bits of a store's address,
+which is `0x528` in our PoC.
 
-`load_page_throughput`: PoC that recovers 47-12 bits of a load's address,
+`load_page_throughput`: PoC that recovers 47-12 bits of a load's address (VPN),
 by measuring sender's throughput.
+Each level of page-table entry has an index of `0x87`, `0x65`, `0x43`, and `0x21`.
 
 `load_page_contention`: PoC that recovers 47-12 bits of a load's address,
 by observing contention at the receiver end.
+Each level of page-table entry has an index of `0x87`, `0x65`, `0x43`, and `0x21`.
 
 ## Execute
 ### Use `runner.py` (Recommended)
@@ -67,3 +70,31 @@ Logical cores `core1` and `core2` should share the same physical core.
 The easiest way to find such two cores is reading from `/proc/cpuinfo`,
 and find two entries that have the same `core id` and `physical id` but
 different `processor` fields.
+
+## Understand Outputs
+If you used "runner.py" to generate plots in the previous step,
+you should see a PDF that has the name `<PoC_name>.pdf`.
+The x-axis represents a store's offet or a page-table entry's index.
+The y-axis represents an averaged measured values (e.g., latency/throughput), averaged over N runs.
+The solid blue line represents the averaged measured values for each each offset/index value.
+The light blue shade represents the standard deviation for each offset/index value.
+The horizontal orange dashed line represents an average value of *all* data points.
+The horizontal grey dashed lines represent `[avg. - 2 * stddev, avg. + 2 * stddev]`.
+The data points with red crosses represent the values that the attacker would recover.
+
+## Expected Results
+Expected results are under `expected/<uarch-name>`.
+
+Hardware config:
+```
+Haswell-EP:
+Skylake-X:
+```
+
+System config:
+```
+OS: 20.04.3 LTS (Focal Fossa)
+Kernel: 5.4.0-89-generic
+Boot options: default with all Spectre mitigations
+Compiler: GCC 9.3.0
+```
