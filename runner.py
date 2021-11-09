@@ -183,10 +183,7 @@ if __name__ == '__main__':
 
     subparsers = parser.add_subparsers(dest='command')
     store_sender = subparsers.add_parser('store_offset')
-    store_sender.set_defaults(npeaks=1, avg_thresh=75, std_thresh=20, reverse=True)
-
-    store_sender_lat = subparsers.add_parser('store_offset_latency')
-    store_sender_lat.set_defaults(npeaks=1, avg_thresh=100, reverse=False)
+    store_sender.set_defaults(npeaks=1, reverse=False)
 
     load_trp = subparsers.add_parser('load_page_throughput')
     load_trp.set_defaults(reverse=True)

