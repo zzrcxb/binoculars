@@ -67,3 +67,4 @@ compile_commands.json
 *.pdf
 *.png
 *.json
+!expected/*/*.pdf
