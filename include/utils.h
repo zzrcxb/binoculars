@@ -31,7 +31,7 @@ typedef double f64;
 
 #define _mwrite(P, V)                                                          \
     do {                                                                       \
-        __asm__ __volatile__("mov %1, %0\n" : "=m"(*(P)) : "r"(V) :);          \
+        __asm__ __volatile__("mov %1, %0\n" : "=m"(*(P)) : "r"(V) : "memory"); \
     } while (0)
 
 static inline void ALWAYS_INLINE _clflush(void const *p) {
