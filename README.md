@@ -87,8 +87,8 @@ Expected results are under `expected/<uarch-name>`.
 
 Hardware config:
 ```
-Haswell-EP:
-Skylake-X:
+Haswell-EP: Xeon E3-1246 v3
+Skylake-X: i7-7820X
 ```
 
 System config:
