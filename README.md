@@ -75,10 +75,10 @@ different `processor` fields.
 If you used "runner.py" to generate plots in the previous step,
 you should see a PDF that has the name `<PoC_name>.pdf`.
 The x-axis represents a store's offet or a page-table entry's index.
-The y-axis represents an averaged measured values (e.g., latency/throughput), averaged over N runs.
-The solid blue line represents the averaged measured values for each each offset/index value.
+The y-axis represents an averaged measured values (e.g., latency/throughput, averaged over N runs).
+The solid blue line represents the averaged measured values for each offset/index value.
 The light blue shade represents the standard deviation for each offset/index value.
-The horizontal orange dashed line represents an average value of *all* data points.
+The horizontal orange dashed line represents the average value of *all* data points.
 The horizontal grey dashed lines represent `[avg. - 2 * stddev, avg. + 2 * stddev]`.
 The data points with red crosses represent the values that the attacker would recover.
 
@@ -93,7 +93,7 @@ Skylake-X: i7-7820X
 
 System config:
 ```
-OS: 20.04.3 LTS (Focal Fossa)
+OS: Ubuntu 20.04.3 LTS (Focal Fossa)
 Kernel: 5.4.0-89-generic
 Boot options: default with all Spectre mitigations
 Compiler: GCC 9.3.0
