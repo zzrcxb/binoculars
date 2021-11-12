@@ -101,7 +101,7 @@ int contention_effects(bool alias, bool sameline) {
 #define VICTIM_STORE_OFFSET (0x528u)
 static int __attribute__((noinline)) store_offset_recovery() {
     int ret = 0;
-    const u32 MEASURES = 1000;
+    const u32 MEASURES = 100;
     pid_t pid = fork();
     if (pid == 0) {
         usleep(10); // a little sleep helps
@@ -117,7 +117,7 @@ static int __attribute__((noinline)) store_offset_recovery() {
         return 2;
     }
 
-    usleep(rand() % 256);
+    usleep(100);
     u32 factor = 4;
     u64 num_pages = 512 * factor; // > sTLB size on Skylake
     u8 *pages = mmap(NULL, num_pages * PAGE_SIZE, PROT_READ | PROT_WRITE,
