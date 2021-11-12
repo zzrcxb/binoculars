@@ -72,6 +72,12 @@ int contention_effects(bool alias, bool sameline) {
 
     usleep(100);
     u64 lat = 0;
+    u32 *results = malloc(sizeof(u32) * MEASURES);
+    if (!results) {
+        goto malloc_fail;
+    }
+    memset(results, 0, sizeof(u32) * MEASURES);
+
     for (u32 i = 0; i < MEASURES; i++) {
         u64 t_start, t_diff;
         u32 sig;
@@ -85,14 +91,19 @@ int contention_effects(bool alias, bool sameline) {
         for (u32 j = 1; j < stlb_way; j++) {
             _maccess(eviction_sets[i % 2][j]);
         }
-        printf("%lu\n", t_diff);
+        results[i] = t_diff;
+    }
+
+    for (u32 i = 0; i < MEASURES; i++) {
+        printf("%u\n", results[i]);
     }
     fprintf(stderr, "Avg. Latency: %lu\n", lat / MEASURES);
 
+    free(results);
+malloc_fail:
     for (u64 i = 0; i < 2 * stlb_way; i++) {
         munmap(eviction_sets[i / stlb_way][i % stlb_way], PAGE_SIZE);
     }
-
     munmap(victim_page, PAGE_SIZE);
     kill(pid, SIGKILL);
     return 0;
