@@ -105,7 +105,7 @@ def plotter(name, offsets: np.ndarray, means: np.ndarray,
     ax.set_xticks(np.arange(min_x, max_x, interval_x))
     ax.set_xticklabels([f'{int(x):#x}' for x in ax.get_xticks()])
     ax.set_xlabel('offset')
-    ax.set_ylabel(f'avg. measure ({args.iter} runs)')
+    ax.set_ylabel(f'avg. {args.unit} ({args.iter} runs)')
     ax.tick_params(labelsize=9)
 
     fig.text(.5, 1, name, ha='center', rotation='horizontal', fontsize=12)
@@ -183,13 +183,13 @@ if __name__ == '__main__':
 
     subparsers = parser.add_subparsers(dest='command')
     store_sender = subparsers.add_parser('store_offset')
-    store_sender.set_defaults(npeaks=1, reverse=False)
+    store_sender.set_defaults(npeaks=1, reverse=False, unit='latency (cyc.)')
 
     load_trp = subparsers.add_parser('load_page_throughput')
-    load_trp.set_defaults(reverse=True)
+    load_trp.set_defaults(reverse=True, unit='throughput (# iters)')
 
     load_ctt = subparsers.add_parser('load_page_contention')
-    load_ctt.set_defaults(reverse=True)
+    load_ctt.set_defaults(reverse=True, unit='latency (cyc.)')
 
     args = parser.parse_args()
 
