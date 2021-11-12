@@ -42,7 +42,7 @@ int contention_effects(bool alias, bool sameline) {
     u64 load_addr = alias ? 0x402010010000ul
                           : (sameline ? 0x402010012000ul : 0x402010020000ul);
     const u32 stlb_way = 16; // for skylake
-    u8 *eviction_sets[2][stlb_way + 1];
+    u8 *eviction_sets[2][stlb_way];
     u64 step = 0x4000000ul; // step on bit 26, for eviction construction
 
     // build eviction set
