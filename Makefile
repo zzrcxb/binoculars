@@ -5,8 +5,8 @@ BIN := bin
 INC := include
 
 PTEDITOR := PTEditor
-CFLAGS := -O1 -g -Werror -I$(INC) -I$(PTEDITOR)
-LDFLAGS := -O1
+CFLAGS := -O1 -g -Werror -I$(INC) -I$(PTEDITOR) -static -std=gnu99
+LDFLAGS := -O1 -static
 
 SRCS := $(shell find $(SRC) -type f -name "*.c")
 BINS := $(patsubst $(SRC)/%, $(BIN)/%, $(SRCS:.c=))
