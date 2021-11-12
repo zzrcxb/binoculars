@@ -35,6 +35,69 @@ static u16 get_PL_index(void *ptr, u8 level) {
 }
 // end of util functions
 
+int contention_effects(bool alias, bool sameline) {
+    const u32 store_offset = 0x80;
+    const u64 MEASURES = 100;
+    // PL1 offset = 0x80 (alias) or 0x90 (not alias but same line) or 0x160
+    u64 load_addr = alias ? 0x402010010000ul
+                          : (sameline ? 0x402010012000ul : 0x402010020000ul);
+    const u32 stlb_way = 16; // for skylake
+    u8 *eviction_sets[2][stlb_way + 1];
+    u64 step = 0x4000000ul; // step on bit 26, for eviction construction
+
+    // build eviction set
+    for (u64 i = 0; i < 2 * stlb_way; i++) {
+        u8 *ptr = setup_page((void *)(load_addr + step * i), PAGE_SIZE, 0x0);
+        if (!ptr) {
+            fprintf(stderr, "Failed to map: %lu\n", i);
+            return 1;
+        }
+        eviction_sets[i / stlb_way][i % stlb_way] = ptr;
+    }
+
+    u8 *victim_page = setup_page(NULL, PAGE_SIZE, 0x0);
+    if (!victim_page)
+        return 2;
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        usleep(10);
+        while (true) {
+            _mwrite(&victim_page[store_offset], 0xff);
+        }
+    } else if (pid < 0) {
+        fprintf(stderr, "Cannot fork!\n");
+        return 3;
+    }
+
+    usleep(100);
+    u64 lat = 0;
+    for (u32 i = 0; i < MEASURES; i++) {
+        u64 t_start, t_diff;
+        u32 sig;
+
+        u8 *ptr = eviction_sets[i % 2][0] + 0x800;
+        t_start = _rdtscp(&sig);
+        _maccess(ptr);
+        t_diff = _rdtscp(&sig) - t_start;
+        lat += t_diff;
+
+        for (u32 j = 1; j < stlb_way; j++) {
+            _maccess(eviction_sets[i % 2][j]);
+        }
+        printf("%lu\n", t_diff);
+    }
+    fprintf(stderr, "Avg. Latency: %lu\n", lat / MEASURES);
+
+    for (u64 i = 0; i < 2 * stlb_way; i++) {
+        munmap(eviction_sets[i / stlb_way][i % stlb_way], PAGE_SIZE);
+    }
+
+    munmap(victim_page, PAGE_SIZE);
+    kill(pid, SIGKILL);
+    return 0;
+}
+
 #define VICTIM_STORE_OFFSET (0x528u)
 static int __attribute__((noinline)) store_offset_recovery() {
     int ret = 0;
@@ -295,6 +358,14 @@ int main(int argc, char **argv) {
         ret = load_page_recovery_throughput();
     } else if (strcmp(argv[1], LOAD_PAGE_CTT_POC) == 0) {
         ret = load_page_recovery_contention();
+    } else if (strcmp(argv[1], "contention") == 0) {
+        if (argc == 4) {
+            ret = contention_effects(atoi(argv[2]), atoi(argv[3]));
+        } else {
+            fprintf(stderr, "\"contention\" expect two more arguments\n"
+                            "\tbino contention <alias?> <same cacheline?>\n"
+                            "\tuse 1 for true and 0 for false\n");
+        }
     } else {
         fprintf(stderr, "Unknown argument \"%s\"", argv[1]);
         ret = 1;
