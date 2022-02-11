@@ -1,385 +1,315 @@
-#define _GNU_SOURCE
-
-#include <signal.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
-#include <sys/mman.h>
+#include <stdlib.h>
+#include <string.h>
 #include <time.h>
+
+#include <fcntl.h>
+#include <signal.h>
+#include <sched.h>
 #include <unistd.h>
 
-#include "utils.h"
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+
 #include "ptedit_header.h"
+#include "utils.h"
 
-// assuming 4KB page and 4-level PT
-#define PAGE_SHIFT (12u)
-#define PAGE_SIZE (1u << PAGE_SHIFT)
-#define INDEX_WIDTH (9u)
-#define INDEX_COUNT (1u << INDEX_WIDTH)
-#define INDEX_MASK (INDEX_COUNT - 1)
+static int CORE1, CORE2;
 
-// allocate PRIVATE memory and initialize it
-static u8 *setup_page(void *addr, size_t size, u8 init) {
-    u8 *page = mmap(addr, size, PROT_READ | PROT_WRITE,
-                    MAP_PRIVATE | MAP_ANONYMOUS, -1 /* fd */, 0 /* offset */);
-    if (page == MAP_FAILED) {
-        return NULL;
-    }
-    memset(page, init, size);
-    return page;
-}
-
-// get index for a given pointer and a level of page table
-// PGD (level 4) -> PUD (level 3) -> PMD (level 2) -> PTE (level 1)
-static u16 get_PL_index(void *ptr, u8 level) {
-    u64 page = ((uintptr_t)ptr >> PAGE_SHIFT);
-    return (page >> ((level - 1) * INDEX_WIDTH)) & INDEX_MASK;
-}
-// end of util functions
-
-int contention_effects(bool alias, bool sameline) {
-    const u32 store_offset = 0x80;
-    const u64 MEASURES = 100;
-    // PL1 offset = 0x80 (alias) or 0x90 (not alias but same line) or 0x160
-    u64 load_addr = alias ? 0x402010010000ul
-                          : (sameline ? 0x402010012000ul : 0x402010020000ul);
-    const u32 stlb_way = 16; // for skylake
-    u8 *eviction_sets[2][stlb_way];
-    u64 step = 0x4000000ul; // step on bit 26, for eviction construction
-
-    // build eviction set
-    for (u64 i = 0; i < 2 * stlb_way; i++) {
-        u8 *ptr = setup_page((void *)(load_addr + step * i), PAGE_SIZE, 0x0);
-        if (!ptr) {
-            fprintf(stderr, "Failed to map: %lu\n", i);
-            return 1;
-        }
-        eviction_sets[i / stlb_way][i % stlb_way] = ptr;
-    }
-
-    u8 *victim_page = setup_page(NULL, PAGE_SIZE, 0x0);
-    if (!victim_page)
-        return 2;
-
-    pid_t pid = fork();
-    if (pid == 0) {
-        usleep(10);
-        while (true) {
-            _mwrite(&victim_page[store_offset], 0xff);
-        }
-    } else if (pid < 0) {
-        fprintf(stderr, "Cannot fork!\n");
-        return 3;
-    }
-
-    usleep(100);
-    u64 lat = 0;
-    u32 *results = malloc(sizeof(u32) * MEASURES);
-    if (!results) {
-        goto malloc_fail;
-    }
-    memset(results, 0, sizeof(u32) * MEASURES);
-
-    for (u32 i = 0; i < MEASURES; i++) {
-        u64 t_start, t_diff;
-        u32 sig;
-
-        u8 *ptr = eviction_sets[i % 2][0] + 0x800;
-        t_start = _rdtscp(&sig);
-        _maccess(ptr);
-        t_diff = _rdtscp(&sig) - t_start;
-        lat += t_diff;
-
-        for (u32 j = 1; j < stlb_way; j++) {
-            _maccess(eviction_sets[i % 2][j]);
-        }
-        results[i] = t_diff;
-    }
-
-    for (u32 i = 0; i < MEASURES; i++) {
-        printf("%u\n", results[i]);
-    }
-    fprintf(stderr, "Avg. Latency: %lu\n", lat / MEASURES);
-
-    free(results);
-malloc_fail:
-    for (u64 i = 0; i < 2 * stlb_way; i++) {
-        munmap(eviction_sets[i / stlb_way][i % stlb_way], PAGE_SIZE);
-    }
-    munmap(victim_page, PAGE_SIZE);
-    kill(pid, SIGKILL);
-    return 0;
-}
+typedef struct pctrl_t {
+    volatile bool start, ready;
+    volatile u64 ts, *lats, idx;
+} pctrl_t;
 
 #define VICTIM_STORE_OFFSET (0x528u)
-static int __attribute__((noinline)) store_offset_recovery() {
+#define STORE_PROBE_BASE_ADDR (0x4b2592c00000ull)
+static int __attribute__((noinline)) store_offset() {
     int ret = 0;
     const u32 MEASURES = 100;
-    pid_t pid = fork();
+
+    volatile pctrl_t *ctrl = (pctrl_t *)mmap_shared(NULL, sizeof(pctrl_t));
+    ctrl->ready = false;
+    ctrl->start = false;
+
+    int pid = fork();
     if (pid == 0) {
-        usleep(10); // a little sleep helps
-        u8 *victim_page = setup_page(NULL, PAGE_SIZE, 0);
-        if (!victim_page) return 1;
+        set_affinity_priority(CORE2, 0);
+        u8 *page = mmap_private(NULL, PAGE_SIZE);
+        if (!page) return 1;
+        ctrl->ready = true;
+        while (!ctrl->start);
+
         while (true) {
-            // normal_page is NOT shared, the child process will make a copy on
-            // write
-            _mwrite(&victim_page[VICTIM_STORE_OFFSET], 0xff);
+            _mwrite(&page[VICTIM_STORE_OFFSET], 0xff);
         }
     } else if (pid < 0) {
-        fprintf(stderr, "Failed to fork.\n");
-        return 2;
+        _error("Failed to fork!\n");
     }
 
-    usleep(100);
-    u32 factor = 4;
-    u64 num_pages = 512 * factor; // > sTLB size on Skylake
-    u8 *pages = mmap(NULL, num_pages * PAGE_SIZE, PROT_READ | PROT_WRITE,
-                     MAP_PRIVATE | MAP_ANONYMOUS, -1 /* fd */, 0 /* offset */);
-    // these pages are not initialized on purpose, so that they are mapped
-    // to the same physical page. This can help prevent data from being evicted
-    // from caches, while still evict translations from TLBs
-    if (!pages) {
-        ret = 3;
-        goto mmap_fail;
+    set_affinity_priority(CORE1, 0);
+    u8 *base_page = mmap_private((void *)STORE_PROBE_BASE_ADDR, PAGE_SIZE * INDEX_COUNT);
+    u64 *results = malloc(sizeof(u64) * INDEX_COUNT);
+    if (!base_page || !results) {
+        _error("Failed to allocate probe pages or results\n");
+        ret = 1;
+        goto err;
     }
+    memset(base_page, 0, PAGE_SIZE * INDEX_COUNT);
+    memset(results, 0, sizeof(u64) * INDEX_COUNT);
 
-    u64 *results = malloc(sizeof(u64) * 512);
-    if (!results) {
-        goto malloc_fail;
-    }
-    memset(results, 0, sizeof(u64) * 512);
+    while (!ctrl->ready);
+    ctrl->start = true;
+    for (unsigned cnt = 0; cnt < INDEX_COUNT; cnt++) {
+        u32 offset = cnt % INDEX_COUNT;
+        u8 *addr = base_page + offset * PAGE_SIZE;
+        for (u32 c = 0; c < MEASURES; c++) {
+            _maccess(addr);
+            ptedit_invalidate_tlb(addr);
 
-    for (u64 cnt = 0; cnt < num_pages * MEASURES; cnt++) {
-        u64 idx = (cnt * 167 + 13) % num_pages; // "randomize the order"
-        u8 *ptr = pages + idx * PAGE_SIZE;
-        u32 sig;
-        u64 t_start, t_diff;
-
-        t_start = _rdtscp(&sig);
-        _maccess(ptr);
-        t_diff = _rdtscp(&sig) - t_start;
-
-        u16 pte_offset = ((uintptr_t)ptr & 0x1ff000) >> 12;
-        results[pte_offset] += t_diff;
+            u64 t_start = _rdtsc_google_begin();
+            _maccess(addr);
+            u64 t_end = _rdtscp_google_end();
+            results[offset] += (t_end - t_start);
+        }
     }
 
     for (u32 offset = 0; offset < INDEX_COUNT; offset++) {
-        printf("%#5x\t%5lu\n", offset << 3, results[offset] / MEASURES / factor);
+        printf("%u\t%lu\n", offset, results[offset] / MEASURES);
     }
 
-    free(results);
-malloc_fail:
-    munmap(pages, num_pages);
-mmap_fail:
+err:
     kill(pid, SIGKILL);
     return ret;
 }
 
-#define VICTIM_LOAD_ADDR (0x439948621000ull)
-static int __attribute__((noinline)) load_page_recovery_throughput() {
-    int ret;
-    const u32 MEASURES = 100, REPEATS = 100000;
-    const i32 WARMUP = 10;
 
-    // a page with PL4_index = 0x87, PL3_index = 0x65,
-    // PL2_index = 0x43, PL1_index = 0x21
-    u8 *page = mmap((void *)VICTIM_LOAD_ADDR /* addr */, PAGE_SIZE,
-                    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS,
-                    -1 /* fd */, 0 /* offset */);
-    if (page == MAP_FAILED) {
+#define VICTIM_LOAD_ADDR (0x5d21ca821000ull)
+static int __attribute__((noinline)) vpn_latency() {
+    int ret = 0;
+    const u32 MEASURES = 100;
+
+    volatile pctrl_t *ctrl = (pctrl_t *)mmap_shared(NULL, sizeof(pctrl_t));
+    ctrl->ready = false;
+    ctrl->start = false;
+    ctrl->lats = (u64 *)mmap_shared(NULL, sizeof(u64) * INDEX_COUNT);
+    if (!ctrl->lats) {
         return 1;
     }
+    memset((void *)ctrl->lats, 0, sizeof(u64) * INDEX_COUNT);
 
-    fprintf(stderr, "Oracles:\n");
-    fprintf(stderr, "\tPL4 index: %#x\n", get_PL_index(page, 4));
-    fprintf(stderr, "\tPL3 index: %#x\n", get_PL_index(page, 3));
-    fprintf(stderr, "\tPL2 index: %#x\n", get_PL_index(page, 2));
-    fprintf(stderr, "\tPL1 index: %#x\n", get_PL_index(page, 1));
-
-    // shared variable controls when to measure throughput in sender
-    volatile u8 *start =
-        mmap(NULL /* addr */, sizeof(u8), PROT_READ | PROT_WRITE,
-             MAP_SHARED | MAP_ANONYMOUS, -1 /* fd */, 0 /* offset */);
-    // shared page to store throughput results
-    u64 *counts = mmap(NULL /* addr */, PAGE_SIZE, PROT_READ | PROT_WRITE,
-                       MAP_SHARED | MAP_ANONYMOUS, -1 /* fd */, 0 /* offset */);
-    if (start == MAP_FAILED || counts == MAP_FAILED) {
-        return 1;
-    }
-    *start = 0;
-    memset(counts, 0 /* init value */, PAGE_SIZE);
-
-    pid_t pid = fork();
+    int pid = fork();
     if (pid == 0) {
-        // sender
-        i32 idx = -WARMUP;
-        usleep(10);
+        set_affinity_priority(CORE2, 0);
+        u8 *page = mmap_private((void *)VICTIM_LOAD_ADDR, PAGE_SIZE);
+        if (!page) return 1;
+        memset(page, 0, PAGE_SIZE);
+        ctrl->ready = true;
 
         while (true) {
-            u64 cnt = 0;
-            while (!*start); /* busy wait */
-
-            // start throughput measurement, we should observe a lower
-            // throughput if _maccess(page)'s page walk is stalled a lot
-            while (*start) {
-                ptedit_invalidate_tlb(page);
-                _maccess(page);
-                _lfence();
-                cnt += 1;
-            }
-            // save throughput results
-            if (idx >= 0)
-                counts[idx % (PAGE_SIZE / sizeof(u64))] = cnt;
-            idx++;
+            while (!ctrl->start);
+            _maccess(page);
+            ptedit_invalidate_tlb(page);
+            u64 t_start = _rdtsc_google_begin();
+            _maccess(page);
+            u64 t_end = _rdtscp_google_end();
+            ctrl->lats[ctrl->idx] += (t_end - t_start);
+            ctrl->start = false;
         }
     } else if (pid < 0) {
-        fprintf(stderr, "Failed to fork.\n");
-        return 2;
+        _error("Failed to fork!\n");
     }
 
-    u8 *victim_page = setup_page(NULL, PAGE_SIZE, 0);
-    if (!victim_page) {
-        ret = 3;
-        goto mmap_fail;
+    set_affinity_priority(CORE1, 0);
+    u8 *page = mmap_private(NULL, PAGE_SIZE);
+    if (!page) {
+        _error("Failed to allocate the probe page\n");
+        ret = 1;
+        goto err;
     }
-    // receiver
-    for (u32 iter = 0; iter < INDEX_COUNT + WARMUP; iter++) {
-        u8 *ptr;
-        if (iter >= WARMUP) {
-            ptr = victim_page + ((iter - WARMUP) << 3); // align to 8-byte
-        } else {
-            ptr = victim_page;
+    memset(page, 0, PAGE_SIZE);
+
+    while (!ctrl->ready);
+    for (unsigned cnt = 0; cnt < INDEX_COUNT * MEASURES; cnt++) {
+        u32 idx = (cnt % INDEX_COUNT);
+        u32 offset = (cnt % INDEX_COUNT) << 3;
+        ctrl->idx = idx;
+        ctrl->start = true;
+        while (ctrl->start) {
+            _mwrite(&page[offset], 0xff);
+            _mwrite(&page[offset], 0xff);
+            _mwrite(&page[offset], 0xff);
         }
-        usleep(10);
-        *start = 1; // start measurement in sender
-        _mfence();
-        _lfence();
-        for (u32 rept = 0; rept < REPEATS; rept++) {
-            // attempt to stall page walks in sender
-            _mwrite(ptr, 0xff /* value to write */);
-        }
-        *start = 0; // end measurement
-        _mfence();
-        _lfence();
     }
 
-    for (u32 disp = 0; disp < INDEX_COUNT; disp++) {
-        printf("%#5x\t%lu\n", disp, counts[disp]);
+    for (u32 offset = 0; offset < INDEX_COUNT; offset++) {
+        printf("%u\t%lu\n", offset, ctrl->lats[offset] / MEASURES);
     }
 
-    munmap(victim_page, PAGE_SIZE);
-mmap_fail:
+err:
     kill(pid, SIGKILL);
-    munmap(counts, PAGE_SIZE);
-    munmap((u8 *)start, sizeof(u8));
-    munmap(page, PAGE_SIZE);
     return ret;
 }
 
-static int __attribute__((noinline)) load_page_recovery_contention() {
-    int ret;
-    const u32 MEASURES = 50, REPEATS = 10000;
-    const i32 WARMUP = 10;
+static int __attribute__((noinline)) vpn_contention() {
+    int ret = 0;
+    const u32 MEASURES = 100;
 
-    // a page with PL4_index = 0x87, PL3_index = 0x65,
-    // PL2_index = 0x43, PL1_index = 0x21
-    u8 *page = mmap((void *)VICTIM_LOAD_ADDR /* addr */, PAGE_SIZE,
-                    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS,
-                    -1 /* fd */, 0 /* offset */);
-    if (page == MAP_FAILED) {
-        return 1;
-    }
+    volatile pctrl_t *ctrl = (pctrl_t *)mmap_shared(NULL, sizeof(pctrl_t));
+    ctrl->ready = false;
+    ctrl->start = false;
 
-    fprintf(stderr, "Oracles:\n");
-    fprintf(stderr, "\tPL4 index: %#x\n", get_PL_index(page, 4));
-    fprintf(stderr, "\tPL3 index: %#x\n", get_PL_index(page, 3));
-    fprintf(stderr, "\tPL2 index: %#x\n", get_PL_index(page, 2));
-    fprintf(stderr, "\tPL1 index: %#x\n", get_PL_index(page, 1));
-
-    pid_t pid = fork();
+    int pid = fork();
     if (pid == 0) {
-        usleep(10);
-        u32 idx = 0;
+        set_affinity_priority(CORE2, 0);
+        u8 *page = mmap_private((void *)VICTIM_LOAD_ADDR, PAGE_SIZE);
+        if (!page) return 1;
+        memset(page, 0, PAGE_SIZE);
+        ctrl->ready = true;
+
+        while (!ctrl->start);
         while (true) {
             ptedit_invalidate_tlb(page);
             _maccess(page);
         }
     } else if (pid < 0) {
-        fprintf(stderr, "Failed to fork.\n");
-        return 2;
+        _error("Failed to fork!\n");
     }
 
-    u8 *victim_page = setup_page(NULL, PAGE_SIZE, 0);
-    if (!victim_page) {
-        ret = 3;
-        goto mmap_fail;
+    set_affinity_priority(CORE1, 0);
+    u8 *page = mmap_private(NULL, PAGE_SIZE);
+    u64 *results = malloc(sizeof(u64) * INDEX_COUNT);
+    if (!page || !results) {
+        _error("Failed to allocate the probe page\n");
+        ret = 1;
+        goto err;
     }
-    for (u32 iter = 0; iter < INDEX_COUNT + WARMUP; iter++) {
-        u32 disp = iter - WARMUP;
-        u8 *ptr;
-        if (iter >= WARMUP) {
-            ptr = victim_page + (disp << 3); // align to 8-byte
-        } else {
-            ptr = victim_page;
+    memset(page, 0, PAGE_SIZE);
+    memset(results, 0, sizeof(u64) * INDEX_COUNT);
+
+    while (!ctrl->ready);
+    ctrl->start = true;
+    for (unsigned cnt = 0; cnt < INDEX_COUNT * MEASURES; cnt++) {
+        u32 idx = (cnt % INDEX_COUNT);
+        u32 offset = (cnt % INDEX_COUNT) << 3;
+        u64 t_start = _rdtsc_google_begin();
+        for (u32 i = 0; i < 10000; i++) {
+            _mwrite(&page[offset], 0xff);
         }
-        u32 sig;
-        u64 total_time = 0, t_start;
-        usleep(10);
-        // measure execution latency for MEASURES times
-        // we should observe a smaller latency if our store stalls page walk
-        // in the sender, since more L1D resources would be available
-        for (u32 cnt = 0; cnt < MEASURES; cnt++) {
-            t_start = _rdtscp(&sig);
-            for (u32 rept = 0; rept < REPEATS; rept++) {
-                _mwrite(ptr, 0xff /* value to write */);
-            }
-            total_time += _rdtscp(&sig) - t_start;
-        }
-        if (iter > WARMUP)
-            printf("%#5x\t%lu\n", disp, total_time / MEASURES);
+        u64 t_end = _rdtscp_google_end();
+        results[idx] += (t_end - t_start);
     }
 
-    munmap(victim_page, PAGE_SIZE);
-mmap_fail:
+    for (u32 offset = 0; offset < INDEX_COUNT; offset++) {
+        printf("%u\t%lu\n", offset, results[offset] / MEASURES);
+    }
+
+err:
     kill(pid, SIGKILL);
-    munmap(page, PAGE_SIZE);
     return ret;
 }
 
-#define STORE_OFFSET_POC "store_offset"
-#define LOAD_PAGE_TRP_POC "load_page_throughput"
-#define LOAD_PAGE_CTT_POC "load_page_contention"
+
+static int __attribute__((noinline)) contention_effect(bool alias) {
+    int ret = 0;
+    const u32 MEASURES = 100;
+    u32 offset = alias ? 0x21ul << 3 : 0x528;
+
+    volatile pctrl_t *ctrl = (pctrl_t *)mmap_shared(NULL, sizeof(pctrl_t));
+    ctrl->ready = false;
+    ctrl->start = false;
+
+    int pid = fork();
+    if (pid == 0) {
+        set_affinity_priority(CORE2, 0);
+        u8 *page = mmap_private(NULL, PAGE_SIZE);
+        if (!page) return 1;
+        memset(page, 0, PAGE_SIZE);
+        ctrl->ready = true;
+
+        while (!ctrl->start);
+        while (true) {
+            _mwrite(&page[offset], 0xff);
+        }
+    } else if (pid < 0) {
+        _error("Failed to fork!\n");
+    }
+
+    set_affinity_priority(CORE1, 0);
+    u8 *page = mmap_private((void *)VICTIM_LOAD_ADDR, PAGE_SIZE);
+    u64 *results = malloc(sizeof(u64) * MEASURES);
+    if (!page || !results) {
+        _error("Failed to allocate the probe page\n");
+        ret = 1;
+        goto err;
+    }
+    memset(page, 0, PAGE_SIZE);
+    memset(results, 0, sizeof(u64) * MEASURES);
+
+    while (!ctrl->ready);
+    ctrl->start = true;
+    for (unsigned cnt = 0; cnt < MEASURES; cnt++) {
+        _maccess(page);
+        ptedit_invalidate_tlb(page);
+        u64 t_start = _rdtsc_google_begin();
+        _maccess(page);
+        u64 t_end = _rdtscp_google_end();
+        results[cnt] = t_end - t_start;
+    }
+
+    for (u32 i = 0; i < MEASURES; i++) {
+        printf("%lu\n", results[i]);
+    }
+
+err:
+    kill(pid, SIGKILL);
+    return ret;
+}
+
+
+static void segv_handler(int signum) {
+    sigset_t sigs;
+    sigemptyset(&sigs);
+    sigaddset(&sigs, signum);
+    sigprocmask(SIG_UNBLOCK, &sigs, NULL);
+
+    ptedit_cleanup();
+    fprintf(stderr, "SEGFAULT!\n");
+    exit(128 + SIGSEGV);
+}
 
 int main(int argc, char **argv) {
-    if (argc < 2) {
-        fprintf(stderr, "Expect one of these arguments:\n"
-                        "\t" STORE_OFFSET_POC "\n"
-                        "\t" LOAD_PAGE_TRP_POC "\n"
-                        "\t" LOAD_PAGE_CTT_POC "\n");
-        return 1;
+    if (argc < 4) {
+        return -1;
     }
 
     if (ptedit_init()) {
-        fprintf(stderr, "Failed to initialize PTEditor, "
-                        "is the kernel module loaded?\n");
-        return -1;
+        return 1;
     }
-    int ret = 0;
-    if (strcmp(argv[1], STORE_OFFSET_POC) == 0) {
-        ret = store_offset_recovery();
-    } else if (strcmp(argv[1], LOAD_PAGE_TRP_POC) == 0) {
-        ret = load_page_recovery_throughput();
-    } else if (strcmp(argv[1], LOAD_PAGE_CTT_POC) == 0) {
-        ret = load_page_recovery_contention();
-    } else if (strcmp(argv[1], "contention") == 0) {
-        if (argc == 4) {
-            ret = contention_effects(atoi(argv[2]), atoi(argv[3]));
-        } else {
-            fprintf(stderr, "\"contention\" expect two more arguments\n"
-                            "\tbino contention <alias?> <same cacheline?>\n"
-                            "\tuse 1 for true and 0 for false\n");
-        }
+
+    if (signal(SIGSEGV, segv_handler) == SIG_ERR) {
+        fprintf(stderr, "Failed to register segfault handler\n");
+        return 2;
+    }
+
+    CORE1 = atoi(argv[2]);
+    CORE2 = atoi(argv[3]);
+
+    int ret;
+    if (strcmp(argv[1], "store_offset") == 0) {
+        ret = store_offset();
+    } else if (strcmp(argv[1], "vpn_latency") == 0) {
+        ret = vpn_latency();
+    } else if (strcmp(argv[1], "vpn_contention") == 0) {
+        ret = vpn_contention();
+    } else if (strcmp(argv[1], "contention_effect") == 0 && argc == 5) {
+        ret = contention_effect(atoi(argv[4]));
     } else {
-        fprintf(stderr, "Unknown argument \"%s\"", argv[1]);
-        ret = 1;
+        fprintf(stderr, "Unknown option %s or insufficient arguments\n", argv[1]);
+        ret = 2;
     }
 
     ptedit_cleanup();
