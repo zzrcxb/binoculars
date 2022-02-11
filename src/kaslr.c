@@ -89,7 +89,7 @@ void kaslr() {
             asm volatile("pushq %%rax\n"
                          "movq %0, %%rax\n"
                          "call *%%rax\n"
-                         "pop %%rax" ::"r"((u64)base_addr)
+                         "pop %%rax" ::"r"((u64)code_base_addr)
                          : "rax");
 #endif // NOPTI
 
