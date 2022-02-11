@@ -185,8 +185,8 @@ if __name__ == '__main__':
     store_sender = subparsers.add_parser('store_offset')
     store_sender.set_defaults(npeaks=1, reverse=False, unit='latency (cyc.)')
 
-    load_trp = subparsers.add_parser('load_page_throughput')
-    load_trp.set_defaults(reverse=True, unit='throughput (# iters)')
+    load_lat = subparsers.add_parser('load_page_latency')
+    load_lat.set_defaults(reverse=False, unit='latency (cyc.)')
 
     load_ctt = subparsers.add_parser('load_page_contention')
     load_ctt.set_defaults(reverse=True, unit='latency (cyc.)')
@@ -203,6 +203,6 @@ if __name__ == '__main__':
         if not cores_list:
             logging.error('Cannot find SMT-enabled processor pairs')
             exit(1)
-        cores = sample(cores_list, 1)[0]
+        cores = cores_list[-1]
     logging.info(f'Going to pin processes to core {cores}')
     repeat_runner(getattr(args, 'command'), cores, args)
