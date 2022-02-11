@@ -61,10 +61,13 @@ obj/
 compile_commands.json
 
 # results
+results/
 *.log
 *.csv
 *.tsv
 *.pdf
 *.png
 *.json
+*.trace
+*.pickle
 !expected/*/*.pdf
