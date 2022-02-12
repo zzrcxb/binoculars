@@ -53,7 +53,7 @@ The `build` directory should contain the follow binaries after building:
 - `kaslr`: PoC that breaks kernel ASLR;
 - `mont-bino`: PoC that breaks ECDSA;
 - `mont-blank`, `mont-memjam-dep`, `mont-memjam-para`:
-PoCs that try break ECDSA with other approaches for comparison purpose
+PoCs that try to break ECDSA with other approaches for comparison purpose
 (not part of Binoculars, detailed in the paper, you can ignore them for now).
 
 ### PTEditor
@@ -99,6 +99,7 @@ the action can be:
 - `store_offset`: Store->Load Channel
 - `vpn_latency`: Load->Store Channel
 - `vpn_contention`: Load->Store Channel Port-Contention Variant
+
 For the `contention_effect` action,
 it further takes a fifth argument `0 or 1`
 to control whether there is 4K-aliasing.
@@ -123,7 +124,7 @@ Execute command:
 ```bash
 cut -d" " data.trace -f7 | sort | uniq -c | sort -n
 ```
-to sort offsets by their occurence in an ascending order.
+to sort offsets by their occurences in an ascending order.
 You can try an offset that is frequent
 and use it to replace the value of `CENTRAL_ZERO` in `src/mont.h`.
 Note that because we not only monitor the offset at `CENTRAL_ZERO`,
