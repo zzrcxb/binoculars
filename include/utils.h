@@ -46,10 +46,6 @@ static inline void ALWAYS_INLINE _clflush(void const *p) {
     __asm__ __volatile__("clflush 0(%0)\n" : : "c"(p) : "rax");
 }
 
-static inline void ALWAYS_INLINE _clflush_v(void volatile *p) {
-    __asm__ __volatile__("clflush 0(%0)\n" : : "c"(p) : "rax");
-}
-
 static inline void ALWAYS_INLINE _lfence(void) {
     __asm__ __volatile__("lfence\n");
 }
