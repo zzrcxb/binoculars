@@ -117,8 +117,7 @@ class DataTrace:
         start_idx = find_indexes(raw_data.tss, self.t_start)
         end_idx = find_indexes(raw_data.tss, self.t_end)
         tss = raw_data.tss[start_idx:end_idx]
-        tick_rate, tick_std = get_tick_rate(tss)
-        assert(anomaly_thresh > tick_rate + 3 * tick_std)
+        tick_rate, _ = get_tick_rate(tss)
 
         diffs = tss[1:] - tss[:-1]
         anomalies = diffs > anomaly_thresh
