@@ -15,16 +15,14 @@ message(STATUS "Native arch=${ARCH}")
 if(ARCH MATCHES "^haswell.*")
     message(STATUS "Haswell detected")
     add_definitions(-DHASWELL)
-endif()
-
-if(ARCH MATCHES "^skylake.*")
+elseif(ARCH MATCHES "^skylake.*")
     message(STATUS "Skylake detected")
     add_definitions(-DSKYLAKE)
-endif()
-
-if(ARCH MATCHES "^cascadelake.*")
+elseif(ARCH MATCHES "^cascadelake.*")
     message(STATUS "Cascade Lake detected")
     add_definitions(-DCASCADE)
+else()
+    message(FATAL_ERROR "Unsupported arch: ${ARCH}. Aborted...")
 endif()
 
 execute_process(COMMAND cat /sys/devices/system/cpu/vulnerabilities/meltdown
