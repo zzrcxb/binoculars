@@ -17,7 +17,10 @@
 
 #include "ptedit_header.h"
 #include "utils.h"
-#include "mont.h"
+
+#define EV_SIZE 24
+#define STEP_BIT 31
+#define CENTRAL_ZERO 0x8d0
 
 int CORE1, CORE2;
 

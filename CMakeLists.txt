@@ -12,18 +12,6 @@ execute_process(COMMAND bash -c "gcc -march=native -Q --help=target | grep march
                                  head -n 1 | tr -d '[:space:]' | cut -d'=' -f2"
                 OUTPUT_VARIABLE ARCH OUTPUT_STRIP_TRAILING_WHITESPACE)
 message(STATUS "Native arch=${ARCH}")
-if(ARCH MATCHES "^haswell.*")
-    message(STATUS "Haswell detected")
-    add_definitions(-DHASWELL)
-elseif(ARCH MATCHES "^skylake.*")
-    message(STATUS "Skylake detected")
-    add_definitions(-DSKYLAKE)
-elseif(ARCH MATCHES "^cascadelake.*")
-    message(STATUS "Cascade Lake detected")
-    add_definitions(-DCASCADE)
-else()
-    message(FATAL_ERROR "Unsupported arch: ${ARCH}. Aborted...")
-endif()
 
 execute_process(COMMAND cat /sys/devices/system/cpu/vulnerabilities/meltdown
                 OUTPUT_VARIABLE PTI OUTPUT_STRIP_TRAILING_WHITESPACE)
