@@ -75,7 +75,7 @@ make
 ```
 to build the tracing tool.
 
-### Our System Configurations
+## Our System Configurations
 
 Hardware config:
 ```
@@ -175,14 +175,14 @@ it means that there are stores to offsets: `0x8b0`, `0x8b8`, `0x8c0`, `0x8c8`, `
 Then, `0x8c8` is a better choice than `0x8e0`, because `0x8c8` is the more towards the center.
 
 
-#### **Step 2 Measure Nonce `k` Prediction Accuracy with Oracle Boundaries**
+#### **Step 2: Measure Nonce `k` Prediction Accuracy with Oracle Boundaries**
 Inside Jupyter notebook `poc.ipynb`,
 the second code block demonstrates extracting the nonce `k`
 with *oracle boundaries*.
 It uses 30 runs for training and 10 different runs to measure the accuracy.
 If one offset does not perform well, please try different offsets following the instruction in Step 1.
 
-### Realistic Nonce `k` Prediction
+#### **Step 3: Realistic Nonce `k` Prediction**
 The Jupyter notebook `mont.ipynb` contains a more realistic nonce `k` recovery demo without using oracle boundaries.
 It follows the training methodology described in the paper.
 Please refer to the comments in each cell for more details.
