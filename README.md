@@ -57,7 +57,7 @@ After that, the page walk is aborted and restarted, presumably with a higher pri
 ## Research Paper
 The Binoculars paper will appear in *USENIX Security'22* with the title
 *"Binoculars: Contention-Based Side-Channel Attacks Exploiting the Page Walker"*.
-You can find a preprint copy [here](https://verishare.org/1ef5fb8c8ab6746690ad440adc543addd9b47cd7/preview/)
+You can find a copy of the paper [here](https://www.usenix.org/system/files/sec22-zhao-zirui.pdf)
 and the BibTeX citation below:
 
 ```bibtex
