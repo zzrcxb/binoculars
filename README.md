@@ -55,7 +55,7 @@ until a watchdog alarm is triggered after \~20,000 cycles.
 After that, the page walk is aborted and restarted, presumably with a higher priority.
 
 ## Research Paper
-The Binoculars paper will appear in *USENIX Security'22* with the title
+The Binoculars paper appears in *USENIX Security '22* with the title
 *"Binoculars: Contention-Based Side-Channel Attacks Exploiting the Page Walker"*.
 You can find a copy of the paper [here](https://www.usenix.org/system/files/sec22-zhao-zirui.pdf)
 and the BibTeX citation below:
@@ -63,7 +63,7 @@ and the BibTeX citation below:
 ```bibtex
 @inproceedings{binoculars-attack,
     author = {Zirui Neil Zhao and Adam Morrison and Christopher W. Fletcher and Josep Torrellas},
-    title = {Binoculars: {Contention-Based} {Side-Channel} Attacks Exploiting the Page Walker},
+    title = {Binoculars: Contention-Based Side-Channel Attacks Exploiting the Page Walker},
     booktitle = {31st USENIX Security Symposium (USENIX Security 22)},
     year = {2022},
 }
