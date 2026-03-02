@@ -1,4 +1,4 @@
-# <img src="https://verishare.org/05a3cb8261bf3af193c147c178c5560e78953f24/preview/" alt="Binoculars Logo" width="40"/> Binoculars Microarchitectural Side Channel Attack
+# <img src="binoculars.svg" alt="Binoculars Logo" width="40"/> Binoculars Microarchitectural Side Channel Attack
 Binoculars is the first *stateless-indirect* side-channel attack
 (stateless means that it does not rely on persistent state changes like cache footprint,
 indirect means that it is not a *direct* result of victim instructions).
